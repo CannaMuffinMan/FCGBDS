@@ -1,0 +1,13 @@
+name = "window-pointer-worker"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+DEFAULT_POINTER_URL = "https://PLACEHOLDER_WEB_ORIGIN"
+ALLOWED_TARGET_HOSTS = "PLACEHOLDER_WEB_HOST,www.PLACEHOLDER_WEB_HOST,PLACEHOLDER_APP_HOST,PLACEHOLDER_API_HOST"
+REDIRECT_MODE = "window"
+
+# JSON object of alias -> URL.
+# Example:
+# POINTER_URLS = '{"default":"https://PLACEHOLDER_WEB_ORIGIN","discord":"https://discord.gg/example","app":"https://PLACEHOLDER_APP_ORIGIN"}'
+POINTER_URLS = '{"default":"https://PLACEHOLDER_WEB_ORIGIN"}'

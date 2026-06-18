@@ -1,0 +1,16 @@
+name = "fcgbc-legit-auth-worker"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+TARGET_API = "https://PLACEHOLDER_API_BASE_URL"
+BROKER_BASE_URL = "https://PLACEHOLDER_API_BASE_URL"
+ALLOWED_TARGET_HOSTS = "PLACEHOLDER_API_HOST"
+
+# Secrets (set via wrangler secret put):
+#   TRIGGER_KEY
+#   WAF_BYPASS_TOKEN
+#   BROKER_KEY
+#
+# BROKER_KEY must match api env SYNTHETIC_BROKER_KEY.
+

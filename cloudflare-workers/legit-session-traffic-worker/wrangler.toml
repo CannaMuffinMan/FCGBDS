@@ -1,0 +1,13 @@
+name = "fcg-legit-session-traffic-worker"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+account_id = "bf1a3f11b34c71e99dd25db4c9ff1ab9"
+
+[vars]
+TARGET_API = "https://PLACEHOLDER_API_BASE_URL"
+ALLOWED_TARGET_HOSTS = "PLACEHOLDER_API_HOST,PLACEHOLDER_SECONDARY_API_HOST,bdscore.PLACEHOLDER_WEB_HOST"
+
+# Secrets (set via wrangler secret put):
+#   TRIGGER_KEY
+#   WAF_BYPASS_TOKEN
+

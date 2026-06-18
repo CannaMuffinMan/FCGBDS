@@ -1,303 +1,104 @@
-════════════════════════════════════════════════════════════════════════════════
-FOREVER COUCH GANG BOT DEFENSE SYSTEM — OPEN SOURCE RELEASE
-Verified Report | Data pulled: 2026-06-16T14:29:56.577Z UTC
-Source: https://api.forevercouchgang.space/api/bot-defense/stats
-All technical claims independently verified against source code
-════════════════════════════════════════════════════════════════════════════════
+FCGBDS EXPLANATIVE NOTE
+=======================
 
+This file is the plain-language explanation of what this repository delivers,
+how the system works, and how to integrate it into your own platform.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WE BUILT IT BECAUSE NOBODY ELSE WOULD
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) What this is
+---------------
 
-Bots are not a Twitch problem. They are not a Kick problem, a YouTube problem,
-or a Discord problem. They are an internet problem — and every platform that
-pretends the damage is contained within their own walls is either lying to you
-or lying to themselves.
+FCGBDS (Forever Couch Gang Bot Defense System) is a production bot-defense
+toolkit designed to sit in front of sensitive routes and classify requests in
+real time.
 
-I am a solo indie developer — vibe coding with AI as my co-pilot. I build a
-platform called Forever Couch Gang — a blockchain-integrated streaming ecosystem
-with a multi-platform chat bridge, a proprietary token economy called
-Proof-of-Rot, and the belief that legitimate engagement from real human beings
-should be the foundation of everything that gets rewarded in the creator economy.
+The project is open source and MIT licensed.
 
-That belief forced me to build what nobody handed me: a production-grade,
-multi-signal bot detection and enforcement system, from scratch, that I run
-on my own servers today. I ran it against real traffic. I ran it against
-deliberate adversarial attack simulations. I have the numbers — pulled live,
-verified from the actual database — and I am releasing everything so the
-rest of the industry stops solving this problem independently while the bots
-keep winning.
+2) What you get in this repository
+----------------------------------
 
+1. Full TypeScript middleware modules under `src/`.
+2. Redis-backed hit/counter manager (`botDefenseRedis.ts`) with local fallback.
+3. Cloudflare Worker examples under `cloudflare-workers/` for simulation and
+   route testing.
+4. Docker and deployment helpers.
+5. Placeholder-safe defaults so you can adapt quickly without inheriting
+   private infrastructure values.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE PROBLEM, STATED AS PLAINLY AS POSSIBLE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3) How FCGBDS decides allow/challenge/block
+-------------------------------------------
 
-Bots inflate numbers. Inflated numbers devalue real creators. Devalued real
-creators leave. What stays behind is a network of fake engagement loops that
-platforms quietly tolerate because the vanity metrics look good in dashboards.
+At a high level, FCGBDS computes a risk score from multiple signal families:
 
-I built a token economy where engagement earns real value. That meant I could
-not tolerate fake engagement even slightly. Every bot that got through the gate
-wasn't just an annoyance — it was a direct theft from a real human viewer's
-reward pool. That economic pressure forced me to solve this seriously, and the
-solution I built is what I am releasing today.
+1. IP burst activity.
+2. Device fingerprint burst activity.
+3. Repeated payload signatures.
+4. Header consistency and browser trust signals.
+5. Host mismatch checks.
+6. Honeypot field activation.
 
+Then it maps score ranges into actions:
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VERIFIED PRODUCTION NUMBERS — LIVE API RESPONSE
-(api.forevercouchgang.space — retrieved 2026-06-16T14:29:56.577Z UTC)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Allow
+2. Challenge (usually HTTP 429)
+3. Block (usually HTTP 403)
 
-REAL TRAFFIC — PRODUCTION BLOCKING
-───────────────────────────────────
-  Total bots blocked (all-time, DB-persisted):        3,324
-  Blocks in last 24 hours:                                4
-  Bot defense enabled:                               TRUE
-  API uptime at query time:                    310,775 sec (≈3.6 days)
+4) How to implement into your system
+------------------------------------
 
-  Blockchain-anchored daily breakdown (last 14 days):
-  ┌─────────────┬──────────────┬──────────────────────────────────────────────┐
-  │ Date        │ Blocked      │ Anchor Hash (SHA-256)                        │
-  ├─────────────┼──────────────┼──────────────────────────────────────────────┤
-  │ 2026-06-16  │ 4 (LIVE)    │ (not yet finalized)                          │
-  │ 2026-06-15  │ 0            │ 4fe27cc1743ea886ebbd4cdcc79ce3dc4c08d8a0... │
-  │ 2026-06-13  │ 64           │ 8c1e093c592ba079544223cf9696db66391284f9... │
-  │ 2026-06-10  │ 0            │ 4f197c32f7e6ffc3972f2350eae59f0b3d515...   │
-  │ 2026-06-09  │ 0            │ b8e7de69bc71301e3ce4f096f0e9a9d4ec77...    │
-  │ 2026-06-08  │ 1            │ 26f70f15464fee3bec9d59078650af0b0297...    │
-  │ 2026-06-07  │ 2,451        │ 0372f3557ceb2663ced033eaeccd4d2142124...   │
-  │ 2026-06-06  │ 0            │ 21f8af8011ed671cdff0526a4a3788be662c7...   │
-  │ 2026-06-03  │ 15           │ 2bef9797c2598e1c88d718c31a90de4f73940...   │
-  │ 2026-06-02  │ 0            │ 1f75535cf8776dfe641486f4e9718620949804...  │
-  │ 2026-06-01  │ 1            │ b13c302fae19d7d772b304c94b280195ab1bd...   │
-  │ 2026-05-31  │ 0            │ 729d2ced2128591b1bcc712560a45469ff79a...   │
-  │ 2026-05-29  │ 0            │ 6a08a984c4690f6f2ddc56f86d31465c29682...   │
-  │ 2026-05-28  │ 2            │ abed58ddb03ae8ae9bebac4172033a078367f9...  │
-  └─────────────┴──────────────┴──────────────────────────────────────────────┘
+Integration path A: FCGBDS as primary edge middleware
 
-  Every day's block total is written as a hash-chained on-chain event
-  (FCGBDS_DAILY_BLOCKCHAIN_EVENT). The anchor hashes above are the actual
-  SHA-256 values returned by the live API. They cannot be retroactively altered.
+1. Configure `.env` from `.env.example`.
+2. Protect your auth/payment/session routes via `BOT_DEFENSE_PATHS`.
+3. Run FCGBDS in front of your app traffic.
 
-ADVERSARIAL TEST SUITE — SYNTHETIC BOT ATTACK VALIDATION
-──────────────────────────────────────────────────────────
-  This is the controlled testing pipeline: known bot patterns are deliberately
-  fired at the live system to measure detection. These are NOT organic
-  production bots — they are intentionally crafted to defeat the system.
+Integration path B: Embed middleware into existing Express API
 
-  Test bots sent:                                   326,320
-  Test bots detected and blocked:                   326,320
-  Detection rate on known adversarial bots:         100.0%
+1. Import `createBotDefenseMiddleware` from `src/botDefense.ts`.
+2. Build a defense instance with your thresholds.
+3. Mount middleware before sensitive endpoints.
 
-  Breakdown by attack category:
-  ┌──────────────────────────────┬─────────────┬───────────────────────────┐
-  │ Attack Type                  │ Bots Fired  │ Last Attack               │
-  ├──────────────────────────────┼─────────────┼───────────────────────────┤
-  │ Classic Bot                  │ 131,449     │ 2026-06-07T04:41:43Z      │
-  │ Viewership Inflation Bot     │ 101,281     │ 2026-06-07T04:41:10Z      │
-  │ Token Replay Bot             │  41,629     │ 2026-06-07T04:40:42Z      │
-  │ Platform Abuse Bot           │  28,416     │ 2026-06-07T04:41:42Z      │
-  │ Slow Drip Bot                │  19,699     │ 2026-06-07T04:41:34Z      │
-  │ Headless Browser Bot         │   3,846     │ 2026-06-07T04:38:25Z      │
-  ├──────────────────────────────┼─────────────┼───────────────────────────┤
-  │ TOTAL                        │ 326,320     │                           │
-  └──────────────────────────────┴─────────────┴───────────────────────────┘
+Integration path C: Multi-instance deployment
 
-  ✓ 326,320 = 131,449 + 101,281 + 41,629 + 28,416 + 19,699 + 3,846 (math checks)
+1. Enable Redis so counters are shared across pods/instances.
+2. Keep app instances stateless.
+3. Tune windows/thresholds with telemetry and known-good traffic.
 
-FALSE POSITIVE RATE — FROM TEST SUITE
-───────────────────────────────────────
-  Legitimate sessions tested alongside bots:
-    Passed through correctly:     2,430
-    Incorrectly blocked:             26
-    Total legitimate sessions:    2,456
+5) Cloudflare worker usage
+--------------------------
 
-  False positive rate: 26 ÷ 2,456 = 1.06%
-  Legitimate pass rate:           98.94%
+The included workers are practical clients for testing and replaying traffic
+patterns.
 
-  NOTE: This false positive rate is derived from the adversarial test suite
-  where legitimate sessions were deliberately interleaved with bot traffic to
-  stress-test classifier accuracy. Production false positive experience for
-  organic users is expected to be lower because organic legitimate traffic
-  does not arrive in the same concentrated burst patterns as the test suite.
+Before deploy:
 
+1. Open each worker's `wrangler.toml`.
+2. Replace placeholders (for example `PLACEHOLDER_API_BASE_URL`).
+3. Set your allowed hosts.
+4. Deploy with Wrangler.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WHAT I BUILT — ARCHITECTURE (ALL CLAIMS BELOW CODE-VERIFIED)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6) Placeholder policy
+---------------------
 
-The FCGBDS is a layered, multi-signal, horizontally scalable bot detection and
-policy enforcement system written in TypeScript on top of Express.js, Redis,
-and PostgreSQL. It runs as production middleware in the API backend and makes
-a real-time allow/challenge/block decision before a single byte of application
-logic executes.
+Sensitive hostnames and internal endpoints were replaced with generic values:
 
-It is not a WAF. It is not a CAPTCHA wall. It is not rate limiting with a fancy
-name. It is a confidence scoring engine that analyzes the request itself and
-makes a forward decision based on a normalized 0–100 risk score derived from
-multiple independent signal families.
+1. `PLACEHOLDER_API_BASE_URL`
+2. `PLACEHOLDER_API_HOST`
+3. `PLACEHOLDER_WEB_HOST`
+4. `PLACEHOLDER_APP_HOST`
+5. `PLACEHOLDER_SECONDARY_API_HOST`
+6. `PLACEHOLDER_TERTIARY_API_HOST`
 
+You must replace these with your own values.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE DECISION ENGINE: createOwnerBotDefenseMiddleware()
-(Source: api/src/index.ts — independently verified)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7) Voluntary request from the author
+------------------------------------
 
-Every protected request passes through this function. The decision tree:
+If FCGBDS protects your platform, please do one of these:
 
-  STEP 1 — WAF Bypass Exemption
-  ───────────────────────────────
-  Internal monitoring, health checks, and synthetic tests carry a verified
-  x-fcg-test-token header. Matching token = instant allow at score 0,
-  profile 'whitelist'. Nothing else runs. This keeps test traffic out of
-  the bot signal corpus.
+1. Donate to @CannaMuffinman.
+2. At minimum, tell people your system is protected by FCGBDS.
 
-  STEP 2 — Profile Resolution (getOwnerDefenseThresholds)
-  ─────────────────────────────────────────────────────────
-  Three threshold profiles, selected by incoming path:
-
-  ┌──────────────┬──────────────┬──────────────┬───────────────┬──────────────┐
-  │ Profile      │ Max IP/min   │ Max Dev/min  │ Max Payload   │ Max Token    │
-  │              │              │              │ Repeat/2min   │ Anomalies    │
-  ├──────────────┼──────────────┼──────────────┼───────────────┼──────────────┤
-  │ auth-write   │ 50           │ 40           │ 20            │ 4            │
-  │ mscb-write   │ 20           │ 15           │ 8             │ 3            │
-  │ default      │ 25           │ 20           │ 10            │ 3            │
-  └──────────────┴──────────────┴──────────────┴───────────────┴──────────────┘
-
-  MSCB paths (OAuth start/callback, session health, bridge-control) run the
-  tightest profile because they are the highest-value attack target.
-
-  STEP 3 — Signal Scoring (additive, capped at 100)
-  ───────────────────────────────────────────────────
-  See signal families below.
-
-  STEP 4 — Decision
-  ──────────────────
-  normalizedScore = min(100, max(0, rawScore))
-  confidence      = normalizedScore / 100  (0.0 – 1.0 float)
-
-  score ≥ 90   →  HTTP 403  action: 'block'      code: 'request_blocked'
-  score ≥ 60   →  HTTP 429  action: 'challenge'  code: 'challenge_required'
-  score < 60   →  HTTP 200  action: 'allow'       → next()
-
-  Every outcome logged via [BotDefense][OwnerDecision] with action,
-  confidence, score, ruleIds, profile, method, path, uaFingerprint.
-  No raw IPs stored. No user identifiers stored.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SIGNAL FAMILIES — EVERY POINT VALUE VERIFIED FROM SOURCE CODE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-FAMILY 1: Browser Trust Signals (collectBrowserTrustSignals)
-─────────────────────────────────────────────────────────────
-Asks: does this request look like it came from a real browser a real
-person is using right now?
-
-  Rule ID                        │ Score │ Trigger
-  ──────────────────────────────────────────────────────────────────────────
-  automated_user_agent           │  +45  │ UA contains python-requests, curl,
-                                 │       │ wget, go-http-client, axios,
-                                 │       │ postman, phantomjs, headlesschrome
-  headless_browser_signature     │  +35  │ UA contains 'headlesschrome'
-  phantomjs_signature            │  +40  │ UA contains 'phantomjs'
-  missing_browser_origin_referer │  +28  │ Browser-like UA on auth/engagement
-                                 │       │ path with no Origin or Referer
-  origin_mismatch                │  +35  │ Origin ≠ configured frontend host
-                                 │       │ and ≠ localhost
-  sec_fetch_mode_suspicious      │  +12  │ Sec-Fetch-Mode not cors/same-origin
-                                 │       │ /navigate
-  sec_fetch_mode_missing         │   +8  │ Sec-Fetch-Mode header absent
-  sec_fetch_site_suspicious      │  +22  │ Sec-Fetch-Site not same-origin/site
-  sec_fetch_site_missing         │  +10  │ Sec-Fetch-Site header absent
-  sec_ch_ua_missing              │  +12  │ Sec-CH-UA absent on browser UA
-  accept_language_missing        │   +8  │ Accept-Language absent
-
-  Key insight: these signals are cheap to spoof individually but expensive
-  to spoof completely. An attacker who nails the user-agent but forgets
-  Sec-CH-UA and Accept-Language still scores into challenge or block range
-  before touching any rate limit.
-
-FAMILY 2: Honeypot Field Detection
-────────────────────────────────────
-  Rule ID                │ Score │ Trigger
-  ─────────────────────────────────────────────────────────────────────
-  honeypot_field_filled  │  +95  │ Any of: website, homepage, companyUrl,
-                         │       │ referralUrl present and non-empty in body
-
-  These fields exist in the frontend request schema but are never shown
-  to users and never filled by legitimate frontend code. A bot that
-  auto-fills forms triggers this on first contact and immediately crosses
-  the block threshold (95 ≥ 90).
-
-FAMILY 3: IP Rate Tracking
-───────────────────────────
-  Rule ID           │ Score │ Trigger
-  ──────────────────────────────────────────────────────────────────────
-  ip_rate_exceeded  │  +35  │ Hits from this IP in the rolling window
-                    │       │ exceed the profile threshold
-
-  State stored simultaneously in:
-  • In-process Map<string, number[]> — fast, zero network latency
-  • Redis INCR+EXPIRE at key: bot-defense:ip:<key> — shared across
-    all API pod replicas, survives restarts
-
-FAMILY 4: Device Fingerprint Rate Tracking
-───────────────────────────────────────────
-  Rule ID               │ Score │ Trigger
-  ────────────────────────────────────────────────────────────────────
-  device_rate_exceeded  │  +30  │ Hits from this device hash exceed
-                        │       │ the profile threshold
-
-  Fingerprint = SHA-256(userAgent|language|timezone|screenResolution|colorDepth)
-  Redis key: bot-defense:device:<hash>
-
-  Why this matters: IP rotation is cheap. VPN and proxy farms cycle IPs
-  constantly. Device fingerprints are harder to rotate because they require
-  changing the full browser environment. A bot farm that rotates IPs but
-  reuses the same browser profile is caught at the device layer.
-
-FAMILY 5: Payload Repetition Detection
-───────────────────────────────────────
-  Rule ID                     │ Score │ Trigger
-  ──────────────────────────────────────────────────────────────────────
-  payload_repetition_exceeded │  +25  │ Same SHA-256(path+body) appears
-                              │  +45  │ more than threshold (×2 threshold)
-                              │       │ times in the rolling window
-
-  Redis key: bot-defense:payload:<sha256hex>
-  Catches: credential stuffing, automated OAuth probing, scripted
-  repeated-action bots hitting the same endpoint with identical bodies.
-
-FAMILY 6: Token Abuse Detection (collectTokenAbuseSignals)
-───────────────────────────────────────────────────────────
-  Rule ID                          │ Score │ Trigger
-  ────────────────────────────────────────────────────────────────────────
-  auth_header_malformed            │  +35  │ Authorization present but does
-                                   │       │ not match /^Bearer\s+\S+$/i
-  auth_token_non_jwt_shape         │  +30  │ Bearer token has ≠ 3 dot-parts
-  auth_token_privilege_keyword     │  +25  │ Token body contains: bypass,
-                                   │       │ internal, elevat, admin, root,
-                                   │       │ service, godmode
-  auth_header_on_public_auth_route │  +20  │ Bearer token sent to /register
-                                   │       │ or /login (unauthenticated paths)
-  auth_context_injection_headers   │  +25  │ Headers: x-user-id, x-role,
-                                   │       │ x-scope, x-real-user, x-auth-*
-  auth_context_conflict            │  +25  │ Both Bearer + injection headers
-  auth_internal_bypass_signature   │  +30  │ 'bearer' AND 'internal-bypass'
-                                   │       │ in same Authorization value
-  token_anomaly_burst              │  +35  │ IP+device+path anomaly counter
-                                   │       │ hits maxTokenAnomalyHits
-                                   │       │ Redis key: bot-defense:token-anomaly
-
-FAMILY 7: Host Validation
-──────────────────────────
-  Rule ID       │ Score │ Trigger
-  ────────────────────────────────────────────────────────────────────
-  host_mismatch │  +90  │ Host header ≠ BOT_DEFENSE_EXPECTED_HOSTNAME
+This is a community request only. MIT remains the legal license.
                 │       │ Alone crosses the block threshold (90 ≥ 90)
 
   Prevents cross-origin abuse, DNS rebinding, and direct-IP attacks
@@ -542,7 +343,7 @@ Technical architecture claims verified: 36 / 36
   • FCGBDS bridge contracts:   14/14 VERIFIED (source: api/src/routes/fcgbdsBridgeRoutes.ts)
 
 Production numbers source:
-  Live API: https://api.forevercouchgang.space/api/bot-defense/stats
+  Live API: https://PLACEHOLDER_API_BASE_URL/api/bot-defense/stats
   Retrieved: 2026-06-16T14:29:56.577Z
   Source field in response: "api-runtime-telemetry"
   botDefenseEnabled: true
@@ -555,5 +356,6 @@ Numbers used in this document come exclusively from:
 ────────────────────────────────────────────────────────────────────────────────
 FCGBDS — Forever Couch Gang Bot Defense System
 Production since 2025 | Open Source Release 2026
-forevercouchgang.space
+PLACEHOLDER_WEB_HOST
 ════════════════════════════════════════════════════════════════════════════════
+

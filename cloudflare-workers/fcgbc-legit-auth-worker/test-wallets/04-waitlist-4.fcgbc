@@ -1,0 +1,16 @@
+﻿FCGBC WALLET BACKUP - SYNTHETIC DEV EXPORT
+Wallet Address: 0x736f31217c0a8c515baea05acb1a851e241b1e00
+REGISTRATION TOKEN: 4a90d361a96833f1e4cfc33b0978a0a88babea47b5d97e8be6fe6f1cfbff3df9
+Created: 2026-03-16T00:50:37.730Z
+Pre-registered: true
+
+MACHINE-READABLE DATA
+{
+  "address": "0x736f31217c0a8c515baea05acb1a851e241b1e00",
+  "registrationToken": "4a90d361a96833f1e4cfc33b0978a0a88babea47b5d97e8be6fe6f1cfbff3df9",
+  "preRegistered": true,
+  "createdAt": "2026-03-16T00:50:37.730Z",
+  "label": "synthetic-736f31",
+  "watermark": "SYNTH-4A90D361"
+}
+

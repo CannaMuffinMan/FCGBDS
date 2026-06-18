@@ -1,0 +1,12 @@
+name = "fcg-platform-abuse-worker"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+TARGET_API = "https://PLACEHOLDER_API_BASE_URL"
+
+# TRIGGER_KEY and WAF_BYPASS_TOKEN are set via:
+#   wrangler secret put TRIGGER_KEY
+#   wrangler secret put WAF_BYPASS_TOKEN
+# Do NOT put real secrets in this file.
+

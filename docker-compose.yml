@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  fcgbds:
+    build: .
+    ports:
+      - "3001:3001"  # Main API
+      - "3002:3002"  # Dashboard
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - HOST=0.0.0.0
+      - DASHBOARD_PORT=3002
+      # Open source edition — no license key required.
+      # API integration (optional)
+      - FCG_API_BASE_URL=${FCG_API_BASE_URL}
+      - FCG_TELEMETRY_ENDPOINT=${FCG_TELEMETRY_ENDPOINT}
+      - FCG_UPDATE_ENDPOINT=${FCG_UPDATE_ENDPOINT}
+      # Bot defense settings
+      - BOT_DEFENSE_ENABLED=true
+      - BOT_DEFENSE_RUNTIME_MODE=zero-offload
+      - BOT_DEFENSE_MAX_IP_HITS=20
+      - BOT_DEFENSE_MAX_DEVICE_HITS=15
+      - BOT_DEFENSE_MAX_PAYLOAD_HITS=8
+      - BOT_DEFENSE_IP_WINDOW_MS=60000
+      - BOT_DEFENSE_DEVICE_WINDOW_MS=60000
+      - BOT_DEFENSE_PAYLOAD_WINDOW_MS=120000
+      - BOT_DEFENSE_PATHS=/api/auth/login,/api/auth/register,/api/user/profile,/api/payment
+      # Update settings
+      - AUTO_UPDATE_ENABLED=true
+      - UPDATE_CHECK_INTERVAL=3600000
+      - UPDATE_BACKUP_ENABLED=true
+      # Telemetry
+      - TELEMETRY_ENABLED=true
+      - TELEMETRY_SEND_INTERVAL=300000
+      # Dashboard
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for distributed deployments
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    profiles:
+      - distributed
+
+volumes:
+  redis_data:
+
+networks:
+  default:
+    name: fcgbds-network
