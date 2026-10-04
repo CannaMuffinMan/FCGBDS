@@ -1,39 +1,21 @@
-# Contributing to FCGBDS
+# Contributing
 
-Thanks for helping improve FCGBDS.
+## Rules
 
-## Ground rules
+1. Keep the core free of vendor-specific product logic (payments, streaming platforms, chain/wallet flows).
+2. Do not add secrets, customer data, or private hostnames.
+3. New signals should be configurable and tested with both a catch case and a false-positive case when practical.
+4. Do not inflate telemetry. Observed and enforced counts stay separate.
 
-1. Keep changes security-focused and production-practical.
-2. Avoid breaking defaults in `.env.example` unless required.
-3. Preserve placeholder safety (do not add private hostnames or secrets).
-4. Include tests or reproduction notes for bug fixes.
+## Checks
 
-## Development flow
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+```
 
-1. Fork the repository.
-2. Create a feature branch.
-3. Make scoped changes.
-4. Run local checks:
-   - `npm run build`
-   - `npm run benchmark:quick` (optional)
-5. Open a pull request with:
-   - Problem statement
-   - What changed
-   - How to test
-   - Any risk notes
+## Pull requests
 
-## PR quality checklist
-
-1. No secrets, tokens, or private infra values.
-2. Updated README/docs when behavior changes.
-3. Backward compatibility documented for breaking changes.
-4. Log output does not leak sensitive request data.
-
-## Suggested contribution areas
-
-1. New bot-signal heuristics with low false positives.
-2. Better challenge strategies for edge traffic.
-3. Platform integration templates.
-4. Performance optimizations and benchmark reports.
-5. Dashboard observability improvements.
+Describe the signal or bug, how to reproduce, and any default-behavior change. Breaking changes belong in the PR description, not in marketing copy.
