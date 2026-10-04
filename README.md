@@ -1,283 +1,126 @@
-# FCGBDS (Forever Couch Gang Bot Defense System)
+# FCGBDS — Forever Couch Gang Bot Defense System
 
-![FCGBDS Protected Poster](assets/social/fcgbds-protected-poster.jpg)
+MIT-licensed bot defense you can run on your own server. It scores requests from multiple signals, defaults to **observe** (log what it would have blocked), and can **enforce** challenge or block once you are ready.
 
-![FCGBDS 8-Layer Poster](assets/social/fcgbds-8-layer-poster.jpg)
+This is not a guarantee against abuse. See [Limitations](#limitations).
 
-FCGBDS is a production bot defense stack you can run in your own system.
-This repo now includes the full customer runtime modules, middleware logic, and Cloudflare Worker test clients with placeholder-safe defaults.
-
-License: MIT.
-Price: Free.
-
-## Start here
-
-1. System deep dive: `explanative`
-2. MSCB bridge deep dive: `MSCB_EXPLANATIVE.md`
-2. Contribution guide: `CONTRIBUTING.md`
-3. Promotion snippets: `PROMOTION_KIT.md`
-4. Benchmark docs: `scripts/benchmark/README.md`
-5. Read-only demo: `demo/read-only-dashboard.html`
-6. Social/media assets: `assets/social/`
-
-## Voluntary request from the author
-
-If FCGBDS helps your platform, we ask for one of the following:
-
-1. Donate to @CannaMuffinman.
-2. At minimum, publicly state that your platform is protected by FCGBDS.
-
-This is a request, not a legal requirement. The legal terms are MIT.
-
-## What is included
-
-1. Full TypeScript runtime modules in `src/`:
-	- `botDefense.ts`
-	- `index.ts`
-	- `telemetryManager.ts`
-	- `updateManager.ts`
-	- `dashboard.ts`
-	- `licenseManager.ts` (open source compatibility shim, no paid license)
-2. Redis state manager reference in `botDefenseRedis.ts`.
-3. Cloudflare Worker examples in `cloudflare-workers/`.
-4. Docker, deploy scripts, and `.env.example` for quick rollout.
-
-## High-level architecture
-
-FCGBDS uses layered scoring and thresholds to decide whether to allow, challenge, or block incoming traffic.
-
-Primary signal families:
-
-1. IP hit windows.
-2. Device fingerprint hit windows.
-3. Payload repetition windows.
-4. Header and browser consistency checks.
-5. Host mismatch checks.
-6. Honeypot field detection.
-
-State can run in-memory or Redis-backed for horizontal scaling.
-
-```mermaid
-flowchart LR
-	U[Client Request] --> E[Edge/API Entry]
-	E --> M[FCGBDS Middleware]
-	M --> S1[IP Window Signal]
-	M --> S2[Device Fingerprint Signal]
-	M --> S3[Payload Repetition Signal]
-	M --> S4[Header and Browser Trust Signal]
-	M --> S5[Host Mismatch Signal]
-	M --> S6[Honeypot Signal]
-	S1 --> R[Risk Score Aggregation]
-	S2 --> R
-	S3 --> R
-	S4 --> R
-	S5 --> R
-	S6 --> R
-	R --> D{Decision Thresholds}
-	D -->|Allow| A[Route Handler]
-	D -->|Challenge| C[429 Challenge Response]
-	D -->|Block| B[403 Block Response]
-	M <-->|Shared Counters| X[(Redis)]
-	M -.fallback.-> L[(Local Memory)]
-	M --> T[Telemetry and Dashboard]
-```
-
-## Quick start
-
-### 1) Install dependencies
+## Five-minute quick start
 
 ```bash
-npm install
-```
-
-### 2) Configure environment
-
-```bash
+git clone https://github.com/CannaMuffinMan/FCGBDS.git
+cd FCGBDS
 cp .env.example .env
-```
-
-Set placeholder values in `.env`:
-
-- `FCG_API_BASE_URL=https://PLACEHOLDER_API_BASE_URL`
-- `BOT_DEFENSE_EXPECTED_HOSTNAME=api.yourdomain.com`
-- `REDIS_URL=redis://localhost:6379` (optional but recommended)
-
-### 3) Run in development
-
-```bash
+npm install
+npm test
 npm run dev
 ```
 
-### 4) Build and run production
+Check it:
 
 ```bash
-npm run build
-npm start
+curl -s http://127.0.0.1:3001/health
+curl -s -D - -o /dev/null http://127.0.0.1:3001/login
+curl -s -D - -o /dev/null -A 'curl/8.0' -H 'Content-Type: application/json' \
+  -d '{"website":"http://example"}' http://127.0.0.1:3001/login
 ```
 
-### 5) Docker option
+In observe mode both requests succeed. The second should include `X-FCGBDS-Would-Block: 1`. Set `FCGBDS_MODE=enforce` when you want 403/429 responses.
+
+Docker:
 
 ```bash
-docker-compose up -d
+docker compose up --build
 ```
 
-## How to integrate FCGBDS into your existing API
+## What it does
 
-### Option A: Run FCGBDS as your main edge API middleware
+| Signal | Role |
+| --- | --- |
+| IP / ASN | Private forwarded IPs; optional datacenter ASN list from a trusted header |
+| Device | Header-derived fingerprint hash and Client-Hints mismatch |
+| Header consistency | Host check (if configured), missing browser Client Hints / Accept / UA |
+| Per-route velocity | Sliding windows for IP, route+IP, and device |
+| Payload | Oversized or high-cardinality bodies; repeat signatures |
+| Token anomalies | Malformed or oversized bearer tokens |
+| Automation / headless | Common bot UAs and explicit automation headers |
+| Replay | Idempotency-key / nonce reuse and payload repeats |
+| Honeypots | Configurable unused form fields |
 
-1. Use `src/index.ts` as your entrypoint.
-2. Set `BOT_DEFENSE_PATHS` to routes you want protected.
-3. Route protected traffic through FCGBDS middleware before business logic.
+**Observe** (default): always allow; emit `X-FCGBDS-Would-Block` / `X-FCGBDS-Would-Challenge` and metrics.
 
-### Option B: Embed middleware in an existing Express API
+**Enforce**: return 429 (accessible text challenge) or 403.
 
-1. Import `createBotDefenseMiddleware` from `src/botDefense.ts`.
-2. Initialize with your thresholds.
-3. `app.use(botDefense.middleware)` before sensitive routes.
+## Integrate as middleware
 
-### Option C: Shared defense state across multiple API pods
+```ts
+import express from 'express';
+import { createMiddleware, createStore, loadConfigFromEnv, Telemetry, AlertSink } from 'fcgbds';
 
-1. Use Redis (`REDIS_URL`) so counters are shared.
-2. Keep your pods stateless.
-3. Tune windows and thresholds per route profile.
+const config = loadConfigFromEnv();
+const store = await createStore({
+  redisUrl: config.redisUrl,
+  prefix: config.redisKeyPrefix,
+  maxKeys: config.storeMaxKeys,
+});
+const app = express();
+app.use(express.json());
+app.use(createMiddleware({
+  config,
+  store,
+  telemetry: new Telemetry(),
+  alerts: new AlertSink(),
+}));
+```
 
-## Cloudflare Workers for testing and simulation
+Route **profiles** in config choose observe vs enforce, velocity limits, and **fail-open** vs **fail-closed** if the evaluator throws. Auth-like prefixes default to fail-closed; webhooks and `/` default to fail-open. Redis errors fall back to in-process memory (shared state is lost across processes until Redis returns).
 
-The `cloudflare-workers/` directory includes worker copies you can deploy quickly.
-All environment-specific hostnames are replaced with placeholders.
+## State
 
-Typical setup per worker:
+- **Redis** when `REDIS_URL` is set and reachable
+- **In-memory** otherwise, or if Redis fails after connect
 
-1. Enter worker folder.
-2. Update `wrangler.toml` placeholders.
-3. Deploy with Wrangler.
+Fail-open vs fail-closed applies to evaluator exceptions, not to Redis fallback. Redis fallback keeps the process serving traffic with local counters.
 
-Example placeholders:
+## Allowlists
 
-- `TARGET_API = "https://PLACEHOLDER_API_BASE_URL"`
-- `ALLOWED_TARGET_HOSTS = "PLACEHOLDER_API_HOST,PLACEHOLDER_SECONDARY_API_HOST"`
+- Known-good bots by User-Agent (Googlebot, Bingbot, Cloudflare health checks by default)
+- Webhook path prefixes; optional required signature header name (the header value is not verified — verify signatures in your own handler)
 
-## Platform integration examples
+## Telemetry
 
-1. Express example: `examples/express-integration.md`
-2. Fastify example: `examples/fastify-integration.md`
-3. Twitch webhook integration notes: `examples/platforms/twitch-webhook-integration.md`
-4. Kick integration notes: `examples/platforms/kick-webhook-integration.md`
-5. MSCB backend plug-in quickstart: `examples/mscb-backend-plug-in.md`
+`GET /metrics` reports **live** vs **practice** (`X-FCGBDS-Lane: practice`) and **observed** vs **enforced** counts separately. Observed “would block” is not counted as an enforced block.
 
-## MSCB plug-in support (included)
-
-FCGBDS now includes plug-and-play MSCB bridge runtime support so teams can wire it into backend quickly and verify activity immediately.
-
-MSCB endpoints:
-
-1. `GET /api/mscb/status`
-2. `GET /api/mscb/events`
-3. `GET /api/mscb/events/stream`
-4. `POST /api/mscb/activate`
-5. `POST /api/mscb/deactivate`
-6. `POST /api/mscb/simulate`
-
-Instant verification flow:
+## Simulation harness
 
 ```bash
-curl http://localhost:3001/api/mscb/status
-curl -X POST http://localhost:3001/api/mscb/simulate -H "Content-Type: application/json" -d '{"platform":"twitch","channelId":"demo","userId":"u1","message":"hello"}'
-curl -N http://localhost:3001/api/mscb/events/stream
+npm run harness
 ```
 
-If events appear in status and stream output, your MSCB bridge code is active and running.
+Labeled good/bad requests report `catchRate` and `falsePositiveRate`. These numbers are for the bundled fixtures, not your production mix.
 
-## Benchmarking and performance reporting
+## Cloudflare Worker
 
-Use the built-in benchmark scripts to produce numbers you can publish with reproducible test conditions.
+See `examples/cloudflare-worker/` for a header/honeypot subset that runs at the edge without Redis. It is an example, not a full port of the Node core.
 
-1. Quick run:
+## Configuration
 
-```bash
-npm run benchmark:quick
-```
+Copy `.env.example`. All hostnames and secrets are yours. `FCGBDS_CHALLENGE_SECRET` should be a long random string in any shared deployment; if empty, challenge tokens are signed with a development default and will not survive a reasoned attack.
 
-2. Custom run:
+## Docs
 
-```bash
-npm run benchmark -- --url http://127.0.0.1:3001/api/auth/login --connections 50 --duration 30 --method POST
-```
+- `docs/OPERATIONAL-RUNBOOK.md` — modes, profiles, Redis, alerts
+- `SECURITY.md` — reporting and handling
+- `CONTRIBUTING.md`
 
-3. Full benchmark guide:
+## Limitations
 
-- `scripts/benchmark/README.md`
+- Determined attackers with real browsers, residential proxies, and solved challenges will get through.
+- ASN and datacenter scoring only work if you pass a trusted ASN header (for example from your edge).
+- Memory store is per process; use Redis for more than one instance.
+- Allowlisted bots can be spoofed unless you also pin IP ranges.
+- Webhook allowlisting does not validate cryptographic signatures.
+- No claim of 100% protection, zero false positives, or replacement for application-level auth.
 
-No static RPS or latency claims are hardcoded in this repo. Publish your own measured results with command + environment details.
+## License
 
-## Before/after showcase workflow
-
-For stream credibility and auditability, publish anonymized before/after metrics snapshots:
-
-1. Update `demo/sample-metrics.json` with your numbers.
-2. Open `demo/read-only-dashboard.html` to visualize the comparison.
-3. Share screenshot + benchmark command in your release notes.
-
-## Placeholder safety
-
-This repo intentionally replaces internal infrastructure values with placeholders:
-
-1. `PLACEHOLDER_API_BASE_URL`
-2. `PLACEHOLDER_API_HOST`
-3. `PLACEHOLDER_APP_HOST`
-4. `PLACEHOLDER_WEB_HOST`
-5. `PLACEHOLDER_SECONDARY_API_HOST`
-6. `PLACEHOLDER_TERTIARY_API_HOST`
-
-Replace these with your own values before deployment.
-
-## Visibility checklist
-
-1. Add GitHub topics to this repo:
-	- bot-detection
-	- rate-limiting
-	- anti-cheat
-	- cloudflare
-	- redis
-	- typescript
-2. Use `PROMOTION_KIT.md` for stream overlays and social posts.
-3. Add a read-only metrics screenshot from `demo/read-only-dashboard.html` to your repo homepage or posts.
-
-## Security and operations notes
-
-1. Do not log raw user secrets.
-2. Keep request body logging minimal and redacted.
-3. Use HTTPS only.
-4. Rotate tokens and shared secrets regularly.
-5. Start with conservative thresholds, then tune with live metrics.
-
-## Repository structure
-
-```text
-.
-├─ src/
-├─ cloudflare-workers/
-├─ examples/
-├─ scripts/benchmark/
-├─ demo/
-├─ botDefenseRedis.ts
-├─ .env.example
-├─ docker-compose.yml
-├─ Dockerfile
-├─ CONTRIBUTING.md
-├─ PROMOTION_KIT.md
-├─ deploy.sh
-├─ deploy.bat
-└─ explanative
-```
-
-## Contributing
-
-Contributions are welcome for:
-
-1. New detection signals.
-2. Better false-positive controls.
-3. Additional worker templates.
-4. Better observability and dashboards.
-
-Open an issue or PR with a clear reproduction and expected behavior.
+MIT. Attribution is appreciated; it is not required beyond the license notice.

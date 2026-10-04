@@ -1,0 +1,10 @@
+name = "fcgbds-edge-example"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+FCGBDS_MODE = "observe"
+EXPECTED_HOSTNAME = ""
+ORIGIN_URL = ""
+HONEYPOT_FIELDS = "website,homepage"
+BLOCK_THRESHOLD = "90"
