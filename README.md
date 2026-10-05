@@ -146,6 +146,12 @@ docker-compose up -d
 The `cloudflare-workers/` directory includes worker copies you can deploy quickly.
 All environment-specific hostnames are replaced with placeholders.
 
+These workers call the target with `fetch()`. A `HeadlessChrome` user-agent string on that call is a header the gate can score. It is not a real headless browser: there is no browser process, no page, and no client-side automation runtime. Results from these workers show how the gate reacts to the headers and paths the harness sent.
+
+TODO: add real headless browser lanes (Playwright driving Chromium, and equivalent Selenium/Puppeteer runs) so automation fingerprints come from a browser instead of a scripted `fetch()`. Until that exists, do not describe these workers as headless-browser tests.
+
+Harness ground truth (expected block, lane, run id) stays in the worker report. The workers do not send `X-Bot-Test`, `X-Legit-Traffic`, `X-Test-Run-Id`, `X-Swarm-*`, `X-Automation-Intent`, `X-Request-Burst`, or `X-FCG-Test-Token` to the scored host. A block counts only when the gate responds with `request_blocked` or `challenge_required`. HTTP 400 and 401 are not counted as catches. Paths outside the configured protected list (default: auth login/register) are flagged in the report and are not claimed as defense results. Override that list per run with `protectedPaths` in the POST body or `BOT_DEFENSE_PATHS` on the worker. Platform interact, wallet status, health, stats, and feed routes are outside the default list.
+
 Typical setup per worker:
 
 1. Enter worker folder.
