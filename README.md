@@ -128,6 +128,7 @@ docker-compose up -d
 1. Use `src/index.ts` as your entrypoint.
 2. Set `BOT_DEFENSE_PATHS` to routes you want protected.
 3. Route protected traffic through FCGBDS middleware before business logic.
+4. Leave `BOT_DEFENSE_TRUST_PROXY` unset unless this process sits behind a proxy you trust. Untrusted `X-Forwarded-For` is a spoof signal and is not the rate-limit identity. Set `BOT_DEFENSE_TRUST_PROXY=true` only when the first forwarded hop is the client.
 
 ### Option B: Embed middleware in an existing Express API
 

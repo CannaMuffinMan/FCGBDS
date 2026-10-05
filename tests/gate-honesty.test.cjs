@@ -116,6 +116,87 @@ test('X-Bot-Test on email register does not force a block', async () => {
   assert.equal(result.body, null);
 });
 
+test('untrusted X-Forwarded-For does not split the rate-limit identity', async () => {
+  const mw = createBotDefenseMiddleware({
+    maxIpHits: 1,
+    maxDeviceHits: 1000,
+    maxPayloadHits: 1000,
+    redisUrl: '',
+    trustProxy: false,
+  });
+  const base = {
+    path: '/api/auth/email/login',
+    method: 'POST',
+    ip: '203.0.113.10',
+    socket: { remoteAddress: '203.0.113.10' },
+    connection: { remoteAddress: '203.0.113.10' },
+  };
+  const first = await invoke(mw, {
+    ...base,
+    body: { email: 'a@example.com', password: 'one' },
+    headers: browserHeaders(),
+  });
+  const second = await invoke(mw, {
+    ...base,
+    body: { email: 'b@example.com', password: 'two' },
+    headers: browserHeaders({ 'x-forwarded-for': '198.51.100.20' }),
+  });
+  mw.destroy();
+  assert.equal(first.next, true);
+  assert.equal(second.next, false);
+  assert.ok(second.body.ruleIds.includes('ip_rate_exceeded'));
+  assert.ok(second.body.ruleIds.includes('private_forwarded_for_spoof'));
+});
+
+test('identical payloads can challenge without a harness header', async () => {
+  const mw = createBotDefenseMiddleware({
+    maxIpHits: 1000,
+    maxDeviceHits: 1000,
+    maxPayloadHits: 2,
+    redisUrl: '',
+  });
+  const req = {
+    path: '/api/auth/email/login',
+    method: 'POST',
+    body: { email: 'repeat@example.com', password: 'repeat' },
+    ip: '203.0.113.40',
+    socket: { remoteAddress: '203.0.113.40' },
+    connection: { remoteAddress: '203.0.113.40' },
+    headers: browserHeaders(),
+  };
+  const first = await invoke(mw, req);
+  const second = await invoke(mw, req);
+  const third = await invoke(mw, req);
+  mw.destroy();
+  assert.equal(first.next, true);
+  assert.equal(second.next, true);
+  assert.equal(third.next, false);
+  assert.ok(third.body.ruleIds.includes('payload_repetition_exceeded'));
+  assert.equal(third.body.code, 'challenge_required');
+  assert.equal(third.status, 429);
+});
+
+test('a loopback socket is not treated as a spoofed forwarded-for', async () => {
+  const mw = createBotDefenseMiddleware({
+    maxIpHits: 1000,
+    maxDeviceHits: 1000,
+    maxPayloadHits: 1000,
+    redisUrl: '',
+    trustProxy: false,
+  });
+  const result = await invoke(mw, {
+    path: '/api/auth/email/login',
+    method: 'POST',
+    body: { email: 'local@example.com', password: 'local' },
+    ip: '127.0.0.1',
+    socket: { remoteAddress: '127.0.0.1' },
+    connection: { remoteAddress: '127.0.0.1' },
+    headers: browserHeaders(),
+  });
+  mw.destroy();
+  assert.equal(result.next, true);
+});
+
 test('automation user-agent substrings are a real UA signal', async () => {
   const samples = [
     'Mozilla/5.0 HeadlessChrome/124.0.0.0 Safari/537.36',
