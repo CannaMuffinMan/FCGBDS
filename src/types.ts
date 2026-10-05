@@ -2,6 +2,9 @@ export type RuntimeMode = 'observe' | 'enforce';
 export type FailurePolicy = 'fail-open' | 'fail-closed';
 export type TrafficLane = 'live' | 'practice';
 export type DecisionAction = 'allow' | 'challenge' | 'block';
+export type StoreBackend = 'memory' | 'redis' | 'postgres' | 'sqlite';
+export type ListKind = 'allow' | 'deny';
+export type ListMatchType = 'ip' | 'cidr' | 'ua' | 'path';
 
 export interface SignalResult {
   id: string;
@@ -56,6 +59,10 @@ export interface DefenseConfig {
   webhookAllowlist: WebhookAllowlistEntry[];
   challengeSecret: string;
   storeMaxKeys: number;
+  /** Header carrying an edge-observed TLS class: browser, automated, or unknown. */
+  tlsClassHeader: string;
+  /** Cap applied to a reputation hook score before it is added. */
+  reputationScoreCap: number;
 }
 
 export interface EvaluationInput {
@@ -81,19 +88,54 @@ export interface EvaluationResult {
   allowlisted: boolean;
   allowlistReason?: string;
   trafficLane: TrafficLane;
-  storeBackend: 'redis' | 'memory';
+  storeBackend: StoreBackend;
+  denied: boolean;
+  denyReason?: string;
+  clearance: boolean;
 }
 
 export interface WindowCount {
   count: number;
-  backend: 'redis' | 'memory';
+  backend: StoreBackend;
+}
+
+export interface ListEntry {
+  id: string;
+  kind: ListKind;
+  matchType: ListMatchType;
+  value: string;
+  note?: string;
 }
 
 export interface DefenseStore {
   incrementWindow(bucket: string, key: string, windowMs: number, now: number): Promise<WindowCount>;
-  seenOnce(bucket: string, key: string, ttlMs: number): Promise<{ first: boolean; backend: 'redis' | 'memory' }>;
-  backend(): 'redis' | 'memory';
+  seenOnce(bucket: string, key: string, ttlMs: number): Promise<{ first: boolean; backend: StoreBackend }>;
+  list(kind: ListKind): Promise<ListEntry[]>;
+  putList(entry: ListEntry): Promise<void>;
+  deleteList(kind: ListKind, id: string): Promise<boolean>;
+  getMeta(key: string): Promise<string | null>;
+  setMeta(key: string, value: string): Promise<void>;
+  backend(): StoreBackend;
   close(): Promise<void>;
+}
+
+/** Operator-supplied IP reputation. The engine does not call any third-party reputation vendor. */
+export interface IpReputationHook {
+  lookup(ip: string): Promise<{ score: number; detail?: string } | null>;
+}
+
+export interface DefenseEvent {
+  id: string;
+  at: string;
+  action: DecisionAction;
+  enforced: boolean;
+  score: number;
+  profileId: string;
+  path: string;
+  signals: string[];
+  trafficLane: TrafficLane;
+  /** sha256 prefix of the client IP. Full IPs are not included. */
+  ipHashPrefix: string;
 }
 
 export interface TelemetrySnapshot {

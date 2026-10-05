@@ -1,6 +1,6 @@
 {
   "name": "fcgbds",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Config-driven bot defense middleware you can run on your own server.",
   "engines": {
     "node": ">=18.0.0"
@@ -12,6 +12,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
+    "test:adapters": "cd sdk/go && go test ./... && cd ../.. && PYTHONPATH=sdk/python python3 sdk/python/tests/test_middleware.py",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "harness": "tsx src/harness.ts"

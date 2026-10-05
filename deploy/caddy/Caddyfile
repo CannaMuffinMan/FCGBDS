@@ -1,0 +1,11 @@
+# Caddy forward_auth to your own FCGBDS instance.
+app.example {
+  forward_auth 127.0.0.1:3001 {
+    uri /v1/forward-auth
+    copy_headers X-FCGBDS-Decision X-FCGBDS-Score X-FCGBDS-Mode
+    header_up X-Original-URI {uri}
+    header_up X-Original-Method {method}
+    header_up X-Forwarded-For {remote_host}
+  }
+  reverse_proxy 127.0.0.1:8080
+}

@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .env
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 logs/
 coverage/
 *.tsbuildinfo

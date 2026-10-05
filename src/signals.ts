@@ -1,7 +1,5 @@
 import crypto from 'crypto';
-import type { DefenseConfig, EvaluationInput, SignalResult } from './types';
-import type { DefenseStore } from './types';
-import type { RouteProfile } from './types';
+import type { DefenseConfig, DefenseStore, EvaluationInput, IpReputationHook, RouteProfile, SignalResult } from './types';
 
 function header(headers: EvaluationInput['headers'], name: string): string {
   const raw = headers[name] ?? headers[name.toLowerCase()];
@@ -239,11 +237,50 @@ function honeypotSignal(input: EvaluationInput, config: DefenseConfig): SignalRe
   return { id: 'honeypot', score: 0, triggered: false };
 }
 
+function tlsConsistency(input: EvaluationInput, config: DefenseConfig): SignalResult {
+  const raw = header(input.headers, config.tlsClassHeader).toLowerCase();
+  if (!raw) return { id: 'tls_consistency', score: 0, triggered: false };
+  const userAgent = ua(input);
+  const looksBrowser = /mozilla\/|chrome\/|safari\/|firefox\//.test(userAgent);
+  const looksLibrary = /curl\/|python-requests|go-http-client|wget\/|okhttp|libwww/.test(userAgent);
+  let score = 0;
+  let detail: string | undefined;
+  if (raw === 'automated' && looksBrowser) {
+    score = 45;
+    detail = 'browser_ua_automated_tls';
+  } else if (raw === 'browser' && looksLibrary) {
+    score = 35;
+    detail = 'library_ua_browser_tls';
+  } else if (raw !== 'browser' && raw !== 'automated' && raw !== 'unknown') {
+    score = 10;
+    detail = 'unrecognized_tls_class';
+  }
+  return { id: 'tls_consistency', score, triggered: score > 0, detail };
+}
+
+async function reputationSignal(
+  input: EvaluationInput,
+  config: DefenseConfig,
+  hook?: IpReputationHook,
+): Promise<SignalResult> {
+  if (!hook) return { id: 'ip_reputation', score: 0, triggered: false };
+  try {
+    const found = await hook.lookup(input.ip);
+    if (!found) return { id: 'ip_reputation', score: 0, triggered: false, detail: 'no_opinion' };
+    const cap = Math.max(0, config.reputationScoreCap);
+    const score = Math.max(0, Math.min(cap, Math.round(found.score)));
+    return { id: 'ip_reputation', score, triggered: score > 0, detail: found.detail || 'hook' };
+  } catch {
+    return { id: 'ip_reputation', score: 0, triggered: false, detail: 'hook_error' };
+  }
+}
+
 export async function runSignals(
   input: EvaluationInput,
   config: DefenseConfig,
   profile: RouteProfile,
   store: DefenseStore,
+  options: { reputation?: IpReputationHook } = {},
 ): Promise<SignalResult[]> {
   const ipAsn = ipAsnSignal(input, config);
   const device = deviceSignal(input);
@@ -254,5 +291,7 @@ export async function runSignals(
   const automation = automationSignal(input);
   const replay = await replaySignal(input, payload.signature, store);
   const honeypot = honeypotSignal(input, config);
-  return [ipAsn, device.result, headers, velocity, payload.result, token, automation, replay, honeypot];
+  const tls = tlsConsistency(input, config);
+  const reputation = await reputationSignal(input, config, options.reputation);
+  return [ipAsn, device.result, headers, velocity, payload.result, token, automation, replay, honeypot, tls, reputation];
 }

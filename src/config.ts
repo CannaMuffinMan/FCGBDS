@@ -95,6 +95,8 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Defense
     ],
     challengeSecret: env.FCGBDS_CHALLENGE_SECRET?.trim() || '',
     storeMaxKeys: envInt(env.FCGBDS_STORE_MAX_KEYS, 5000),
+    tlsClassHeader: env.FCGBDS_TLS_CLASS_HEADER?.trim() || 'x-fcgbds-tls-class',
+    reputationScoreCap: envInt(env.FCGBDS_REPUTATION_CAP, 50),
   };
 }
 

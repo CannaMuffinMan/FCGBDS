@@ -1,9 +1,13 @@
 import type { NextFunction, Request, Response } from 'express';
-import { evaluateRequest } from './evaluate';
-import { challengePage, issueChallengeToken } from './challenge';
 import { AlertSink } from './alerts';
+import { challengePage, issueChallengeToken } from './challenge';
+import { matchProfile } from './config';
+import { applyDecisionHeaders, decisionFor } from './decision';
+import { evaluateRequest } from './evaluate';
+import { EventBus, postWebhook } from './events';
+import { log } from './log';
+import type { DefenseConfig, DefenseStore, EvaluationInput, IpReputationHook } from './types';
 import { Telemetry } from './telemetry';
-import type { DefenseConfig, DefenseStore, EvaluationInput } from './types';
 
 function readHeader(req: Request, name: string): string {
   const raw = req.headers[name];
@@ -36,50 +40,47 @@ export function createMiddleware(opts: {
   store: DefenseStore;
   telemetry: Telemetry;
   alerts: AlertSink;
+  events?: EventBus;
+  reputation?: IpReputationHook;
+  webhookUrl?: string;
 }) {
   const { config, store, telemetry, alerts } = opts;
 
   return async function botDefenseMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (req.path.startsWith('/__fcgbds/')) {
+    if (req.path.startsWith('/__fcgbds/') || req.path.startsWith('/v1/') || req.path === '/health' || req.path === '/ready' || req.path === '/metrics' || req.path === '/dashboard' || req.path === '/wall.js') {
       next();
       return;
     }
     try {
-      const result = await evaluateRequest(requestToInput(req, config.trustProxy), config, store);
+      const input = requestToInput(req, config.trustProxy);
+      const result = await evaluateRequest(input, config, store, { reputation: opts.reputation });
       telemetry.record(result);
       alerts.fromResult(req.path, result);
-      res.setHeader('X-FCGBDS-Mode', result.mode);
-      res.setHeader('X-FCGBDS-Score', String(result.score));
-      res.setHeader('X-FCGBDS-Would-Block', result.wouldHaveBlocked ? '1' : '0');
-      res.setHeader('X-FCGBDS-Would-Challenge', result.wouldHaveChallenged ? '1' : '0');
-      if (result.allowlisted || result.action === 'allow') {
+      const event = opts.events?.publish(req.path, input.ip, result);
+      if (event && opts.webhookUrl) postWebhook(opts.webhookUrl, event);
+      applyDecisionHeaders((name, value) => res.setHeader(name, value), result);
+      if (result.action === 'allow') {
         next();
         return;
       }
-      if (result.action === 'challenge') {
-        const token = issueChallengeToken(config.challengeSecret);
-        const accept = String(req.headers.accept || '');
-        res.status(429);
-        if (accept.includes('text/html')) {
-          res.type('html').send(challengePage(token));
-        } else {
-          res.json({
-            error: 'challenge_required',
-            score: result.score,
-            signals: result.signals.filter((s) => s.triggered).map((s) => s.id),
-          });
-        }
+      const token = result.action === 'challenge' ? issueChallengeToken(config.challengeSecret) : undefined;
+      const decision = decisionFor(result, token);
+      if (!decision) {
+        next();
         return;
       }
-      res.status(403).json({
-        error: 'request_blocked',
-        score: result.score,
-        signals: result.signals.filter((s) => s.triggered).map((s) => s.id),
-      });
-    } catch {
-      const policy = config.profiles[0]?.failurePolicy || 'fail-open';
-      if (policy === 'fail-closed') {
-        res.status(503).json({ error: 'defense_unavailable' });
+      res.status(decision.status);
+      const accept = String(req.headers.accept || '');
+      if (decision.status === 429 && accept.includes('text/html')) {
+        res.type('html').send(challengePage(token || ''));
+        return;
+      }
+      res.json(decision.body);
+    } catch (error) {
+      const profile = matchProfile(req.path, req.method, config.profiles);
+      log('error', 'middleware_failed', { message: error instanceof Error ? error.message : 'error', profile: profile.id });
+      if (profile.failurePolicy === 'fail-closed') {
+        res.status(503).json({ error: 'defense_unavailable', message: 'The evaluator failed and this route is fail-closed.' });
         return;
       }
       next();

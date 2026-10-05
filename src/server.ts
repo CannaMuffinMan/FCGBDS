@@ -1,71 +1,66 @@
-import express from 'express';
-import helmet from 'helmet';
 import dotenv from 'dotenv';
+import { createApp } from './app';
 import { AlertSink } from './alerts';
-import { challengePassed, issueChallengeToken, challengePage } from './challenge';
 import { loadConfigFromEnv } from './config';
-import { createMiddleware } from './middleware';
+import { EventBus } from './events';
+import { log } from './log';
+import { httpReputationHook } from './reputation';
 import { createStore } from './store';
 import { Telemetry } from './telemetry';
+import type { RouteProfile, RuntimeMode } from './types';
 
 dotenv.config();
 
+function env(name: string): string {
+  return process.env[name]?.trim() || '';
+}
+
 async function main(): Promise<void> {
   const config = loadConfigFromEnv();
+  const backend = (env('FCGBDS_STORE') || (config.redisUrl ? 'redis' : 'memory')) as 'memory' | 'redis' | 'postgres' | 'sqlite';
   const store = await createStore({
+    backend,
     redisUrl: config.redisUrl,
+    postgresUrl: env('FCGBDS_POSTGRES_URL') || env('DATABASE_URL'),
+    sqlitePath: env('FCGBDS_SQLITE_PATH') || 'fcgbds.sqlite',
     prefix: config.redisKeyPrefix,
     maxKeys: config.storeMaxKeys,
   });
+  const savedMode = await store.getMeta('mode');
+  if (savedMode === 'observe' || savedMode === 'enforce') config.mode = savedMode as RuntimeMode;
+  const savedProfiles = await store.getMeta('profiles');
+  if (savedProfiles) {
+    try {
+      const parsed = JSON.parse(savedProfiles) as RouteProfile[];
+      if (Array.isArray(parsed)) config.profiles = parsed;
+    } catch {
+      log('warn', 'profiles_meta_ignored', {});
+    }
+  }
   const telemetry = new Telemetry();
   const alerts = new AlertSink();
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: false }));
-
-  app.get('/health', (_req, res) => {
-    res.json({
-      ok: true,
-      mode: config.mode,
-      store: store.backend(),
-      version: process.env.npm_package_version || '2.0.0',
-    });
+  const events = new EventBus();
+  const reputationUrl = env('FCGBDS_REPUTATION_URL');
+  const app = createApp({
+    config,
+    store,
+    telemetry,
+    alerts,
+    events,
+    reputation: reputationUrl ? httpReputationHook(reputationUrl) : undefined,
+    apiToken: env('FCGBDS_API_TOKEN'),
+    dashboardPassword: env('FCGBDS_DASHBOARD_PASSWORD'),
+    sessionSecret: env('FCGBDS_SESSION_SECRET') || env('FCGBDS_CHALLENGE_SECRET') || 'ephemeral-dev-only',
+    wallPublic: ['1', 'true', 'yes'].includes(env('FCGBDS_WALL_PUBLIC').toLowerCase()),
+    webhookUrl: env('FCGBDS_EVENT_WEBHOOK_URL') || undefined,
+    version: process.env.npm_package_version || '2.1.0',
+    redisConfigured: backend === 'redis',
   });
-
-  app.get('/metrics', (_req, res) => {
-    res.json({
-      mode: config.mode,
-      store: store.backend(),
-      telemetry: telemetry.snapshot(),
-      recentAlerts: alerts.recent().slice(-50),
-    });
-  });
-
-  app.get('/__fcgbds/challenge', (_req, res) => {
-    res.type('html').send(challengePage(issueChallengeToken(config.challengeSecret)));
-  });
-
-  app.post('/__fcgbds/challenge', (req, res) => {
-    if (!challengePassed(req.body?.answer, String(req.body?.token || ''), config.challengeSecret)) {
-      res.status(400).type('html').send(challengePage(issueChallengeToken(config.challengeSecret)));
-      return;
-    }
-    res.json({ ok: true });
-  });
-
-  app.use(createMiddleware({ config, store, telemetry, alerts }));
-
-  app.all('/login', (_req, res) => res.json({ ok: true, route: 'login' }));
-  app.all('/register', (_req, res) => res.json({ ok: true, route: 'register' }));
-  app.all('/api/*path', (_req, res) => res.json({ ok: true, route: 'api' }));
-  app.get('/', (_req, res) => res.json({ name: 'fcgbds', mode: config.mode }));
 
   const port = Number.parseInt(process.env.PORT || '3001', 10);
   const host = process.env.HOST || '0.0.0.0';
   const server = app.listen(port, host, () => {
-    console.log(`FCGBDS listening on ${host}:${port} mode=${config.mode} store=${store.backend()}`);
+    log('info', 'listening', { host, port, mode: config.mode, store: store.backend() });
   });
 
   const shutdown = async () => {
@@ -78,6 +73,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error);
+  log('error', 'startup_failed', { message: error instanceof Error ? error.message : 'error' });
   process.exit(1);
 });

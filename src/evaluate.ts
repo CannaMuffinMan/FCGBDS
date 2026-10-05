@@ -1,6 +1,12 @@
 import { matchProfile } from './config';
+import { clearanceValid, readClearance } from './challenge';
+import { matchList } from './lists';
 import { runSignals } from './signals';
-import type { DefenseConfig, DefenseStore, EvaluationInput, EvaluationResult, TrafficLane } from './types';
+import type { DefenseConfig, DefenseStore, EvaluationInput, EvaluationResult, IpReputationHook, TrafficLane } from './types';
+
+export interface EvaluateOptions {
+  reputation?: IpReputationHook;
+}
 
 function header(headers: EvaluationInput['headers'], name: string): string {
   const raw = headers[name] ?? headers[name.toLowerCase()];
@@ -47,34 +53,101 @@ export function checkAllowlist(input: EvaluationInput, config: DefenseConfig): {
   return { ok: false };
 }
 
+function baseResult(
+  partial: Pick<EvaluationResult, 'action' | 'wouldHaveBlocked' | 'wouldHaveChallenged' | 'score' | 'signals' | 'enforced' | 'allowlisted'> &
+    Partial<EvaluationResult>,
+  shared: {
+    mode: EvaluationResult['mode'];
+    profileId: string;
+    failurePolicy: EvaluationResult['failurePolicy'];
+    trafficLane: TrafficLane;
+    storeBackend: EvaluationResult['storeBackend'];
+  },
+): EvaluationResult {
+  return {
+    allowlistReason: undefined,
+    denied: false,
+    clearance: false,
+    ...shared,
+    ...partial,
+  };
+}
+
 export async function evaluateRequest(
   input: EvaluationInput,
   config: DefenseConfig,
   store: DefenseStore,
+  options: EvaluateOptions = {},
 ): Promise<EvaluationResult> {
   const profile = matchProfile(input.path, input.method, config.profiles);
   const mode = profile.mode || config.mode;
   const trafficLane = lane(input, config);
-  const allow = checkAllowlist(input, config);
-  if (allow.ok) {
-    return {
-      action: 'allow',
-      wouldHaveBlocked: false,
-      wouldHaveChallenged: false,
-      score: 0,
-      signals: [],
-      mode,
-      enforced: false,
-      profileId: profile.id,
-      failurePolicy: profile.failurePolicy,
-      allowlisted: true,
-      allowlistReason: allow.reason,
-      trafficLane,
-      storeBackend: store.backend(),
-    };
+  const shared = {
+    mode,
+    profileId: profile.id,
+    failurePolicy: profile.failurePolicy,
+    trafficLane,
+    storeBackend: store.backend(),
+  };
+
+  const userAgent = header(input.headers, 'user-agent');
+  const denied = matchList(await store.list('deny'), { ip: input.ip, userAgent, path: input.path });
+  if (denied) {
+    const enforce = mode === 'enforce';
+    return baseResult(
+      {
+        action: enforce ? 'block' : 'allow',
+        wouldHaveBlocked: true,
+        wouldHaveChallenged: false,
+        score: 100,
+        signals: [{ id: 'deny_list', score: 100, triggered: true, detail: denied.id }],
+        enforced: enforce,
+        allowlisted: false,
+        denied: true,
+        denyReason: denied.id,
+      },
+      shared,
+    );
   }
 
-  const signals = await runSignals(input, config, profile, store);
+  const dynamicAllow = matchList(await store.list('allow'), { ip: input.ip, userAgent, path: input.path });
+  const allow = dynamicAllow
+    ? { ok: true, reason: `list:${dynamicAllow.id}` }
+    : checkAllowlist(input, config);
+  if (allow.ok) {
+    return baseResult(
+      {
+        action: 'allow',
+        wouldHaveBlocked: false,
+        wouldHaveChallenged: false,
+        score: 0,
+        signals: [],
+        enforced: false,
+        allowlisted: true,
+        allowlistReason: allow.reason,
+      },
+      shared,
+    );
+  }
+
+  const clearance = readClearance(input.headers);
+  if (clearance && clearanceValid(config.challengeSecret, clearance, input.ip)) {
+    return baseResult(
+      {
+        action: 'allow',
+        wouldHaveBlocked: false,
+        wouldHaveChallenged: false,
+        score: 0,
+        signals: [],
+        enforced: false,
+        allowlisted: false,
+        clearance: true,
+      },
+      shared,
+    );
+  }
+
+  const signals = await runSignals(input, config, profile, store, options);
   const score = Math.min(100, signals.reduce((sum, s) => sum + s.score, 0));
   const challengeAt = profile.challengeThreshold ?? config.challengeThreshold;
   const blockAt = profile.blockThreshold ?? config.blockThreshold;
@@ -86,18 +159,16 @@ export async function evaluateRequest(
       ? 'challenge'
       : 'allow';
   const enforce = mode === 'enforce';
-  return {
-    action: enforce ? intended : 'allow',
-    wouldHaveBlocked,
-    wouldHaveChallenged,
-    score,
-    signals,
-    mode,
-    enforced: enforce && intended !== 'allow',
-    profileId: profile.id,
-    failurePolicy: profile.failurePolicy,
-    allowlisted: false,
-    trafficLane,
-    storeBackend: store.backend(),
-  };
+  return baseResult(
+    {
+      action: enforce ? intended : 'allow',
+      wouldHaveBlocked,
+      wouldHaveChallenged,
+      score,
+      signals,
+      enforced: enforce && intended !== 'allow',
+      allowlisted: false,
+    },
+    shared,
+  );
 }

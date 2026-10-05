@@ -7,7 +7,7 @@
 | `observe` (default) | Requests are allowed. Headers and `/metrics` show would-have blocked/challenged. |
 | `enforce` | Challenge at the challenge threshold; block at the block threshold. |
 
-Start in observe. Watch `/metrics` and `recentAlerts` until you understand false positives, then set `FCGBDS_MODE=enforce` globally or per profile.
+Start in observe. `GET /metrics` is Prometheus text. `GET /v1/stats` (admin token or dashboard session) is JSON, including `recentAlerts`. Set `FCGBDS_MODE=enforce` or `POST /v1/mode` when you want challenge and block responses.
 
 The visitor challenge is a text form (`CONTINUE`) plus a signed token. It is usable without images. In observe mode the middleware does not present it; operators can still open `GET /__fcgbds/challenge`. If challenge verification code throws, observe traffic is not blocked by this layer.
 

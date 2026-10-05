@@ -7,8 +7,11 @@ services:
       PORT: "3001"
       HOST: "0.0.0.0"
       FCGBDS_MODE: observe
+      FCGBDS_STORE: redis
       REDIS_URL: redis://redis:6379
       FCGBDS_CHALLENGE_SECRET: change-me-in-real-deployments
+      FCGBDS_API_TOKEN: change-me
+      FCGBDS_DASHBOARD_PASSWORD: change-me
     depends_on:
       - redis
     restart: unless-stopped
