@@ -6,6 +6,14 @@
  * waves with rotating identities.
  */
 
+import {
+  stripHarnessLabels,
+  resolveProtectedPaths,
+  gradeObservation,
+  logHarnessCorrelation,
+  summarizeDefense,
+} from '../harness/gateGrade.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let leasePool = [];
@@ -104,8 +112,6 @@ function buildHostileRequestProfile(wave) {
     delayMs,
     headers: {
       'User-Agent': pickFrom(botUas, 'python-requests/2.32.3'),
-      'X-Automation-Intent': 'mass-replay',
-      'X-Request-Burst': String(randomInt(120, 900)),
       'X-Forwarded-For': `10.${randomInt(0, 255)}.${randomInt(0, 255)}.${randomInt(0, 255)}`,
       'Cache-Control': 'no-cache',
       Pragma: 'no-cache',
@@ -129,26 +135,12 @@ function computeRequestBudget(payload, env) {
   return Math.max(1, Math.min(35, Math.floor(raw)));
 }
 
-function buildSwarmHeaders(swarmProfile, waveId) {
-  if (!swarmProfile || typeof swarmProfile !== 'object') return {};
-  return {
-    'X-Swarm-Id': swarmProfile.swarmId || 'fcgbc-legit-auth',
-    'X-Swarm-Fingerprint': swarmProfile.sharedFingerprint || 'fcgbc-legit-fingerprint',
-    'X-Swarm-Wave': waveId,
-    'X-Swarm-Pattern': swarmProfile.pattern || 'human-jitter',
-  };
-}
-
 async function brokerRequest(baseUrl, env, path, body = {}) {
-  const headers = {
+  const headers = stripHarnessLabels({
     'Content-Type': 'application/json',
     'User-Agent': 'railway-app synthetic-auth-broker/1.0',
     'x-fcg-synthetic-broker-key': env.BROKER_KEY || '',
-  };
-
-  if (env.WAF_BYPASS_TOKEN) {
-    headers['X-FCG-Test-Token'] = env.WAF_BYPASS_TOKEN;
-  }
+  });
 
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
@@ -334,7 +326,7 @@ function buildWaves(base) {
   ];
 }
 
-async function runBot(baseUrl, brokerApiBase, wave, botIndex, bypassHeader, swarmProfile, env) {
+async function runBot(baseUrl, brokerApiBase, wave, botIndex, swarmProfile, env, protectedPaths) {
   let lease;
   try {
     lease = await getLease(brokerApiBase, env);
@@ -363,21 +355,23 @@ async function runBot(baseUrl, brokerApiBase, wave, botIndex, bypassHeader, swar
 
   const pathWithEntropy = `${wave.path}${behavior.pathSuffix || ''}`;
 
-  const headers = {
+  const headers = stripHarnessLabels({
     ...wave.headers,
     ...behavior.headers,
-    ...buildSwarmHeaders(swarmProfile, wave.id),
     Authorization: lease.authorization,
     Cookie: lease.cookie,
-    'X-Test-Run-Id': `fcgbc-legit-auth-${wave.id}-${botIndex}`,
-  };
-
-  if (bypassHeader) headers['X-FCG-Test-Token'] = bypassHeader;
+  });
 
   const url = `${baseUrl}${pathWithEntropy}`;
   const startedAt = Date.now();
 
   try {
+    logHarnessCorrelation({
+      worker: 'fcgbc-legit-auth-worker',
+      waveId: wave.id,
+      expectBlock: wave.expectBlock,
+      startedAt: new Date(startedAt).toISOString(),
+    });
     const response = await fetch(url, {
       method: wave.method,
       headers,
@@ -386,22 +380,28 @@ async function runBot(baseUrl, brokerApiBase, wave, botIndex, bypassHeader, swar
 
     const latencyMs = Date.now() - startedAt;
     const status = response.status;
-
-    const blocked = status === 403 || status === 429 || (wave.expectBlock && status === 401);
-    const failure = wave.expectBlock ? !blocked : blocked;
+    let responseJson = null;
+    try {
+      responseJson = await response.json();
+    } catch (_) {}
+    const grade = gradeObservation({
+      status,
+      body: responseJson,
+      expectBlock: wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+    });
 
     return {
       botIndex,
       wave: wave.id,
+      waveName: wave.name,
       accountId: lease.accountId || null,
       accountLabel: lease.accountLabel || null,
       method: wave.method,
       path: pathWithEntropy,
-      status,
-      blocked,
-      FAILURE: failure,
-      FALSE_POS: !wave.expectBlock && blocked,
-      blockCode: blocked ? 'request_blocked' : null,
+      ...grade,
+      blockCode: grade.blockCode || null,
       latencyMs,
       behaviorDelayMs: behavior.delayMs,
       error: null,
@@ -411,14 +411,18 @@ async function runBot(baseUrl, brokerApiBase, wave, botIndex, bypassHeader, swar
     return {
       botIndex,
       wave: wave.id,
+      waveName: wave.name,
       accountId: lease.accountId || null,
       accountLabel: lease.accountLabel || null,
       method: wave.method,
       path: pathWithEntropy,
-      status: 0,
-      blocked: false,
-      FAILURE: true,
-      FALSE_POS: false,
+      ...gradeObservation({
+        status: 0,
+        body: null,
+        expectBlock: wave.expectBlock,
+        path: wave.path,
+        protectedPaths,
+      }),
       blockCode: null,
       latencyMs,
       behaviorDelayMs: behavior.delayMs,
@@ -457,6 +461,7 @@ function summarize(results, waves, workerName, baseUrl) {
   });
 
   const blockRate = totalBots > 0 ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0.0%';
+  const defense = summarizeDefense(results, waves);
 
   return {
     workerName,
@@ -471,15 +476,16 @@ function summarize(results, waves, workerName, baseUrl) {
     totalBots,
     totalBlocked,
     blockRate,
-    failures,
-    falsePositives,
+    failures: defense.failures,
+    falsePositives: defense.falsePositives,
+    grading: defense,
     networkErrors,
-    verdict: failures === 0
-      ? 'DEFENSE HELD — Expected outcomes observed across hostile and legit lanes.'
-      : `DEFENSE SIGNAL — ${failures} request(s) deviated from expected lane behavior.`,
-    falsePositiveVerdict: falsePositives === 0
-      ? 'No collateral damage — legit requests unaffected.'
-      : `WARNING: ${falsePositives} legitimate request(s) were incorrectly blocked.`,
+    verdict: defense.falseNegatives === 0
+      ? 'On protected paths, no hostile request missed the gate. Paths outside the protected list are not defense results.'
+      : `Gate missed ${defense.falseNegatives} hostile request(s) on protected paths.`,
+    falsePositiveVerdict: defense.falsePositives === 0
+      ? 'No protected-path legit request was blocked or challenged by the gate.'
+      : `FAILURE: ${defense.falsePositives} legitimate protected-path request(s) were blocked or challenged by the gate.`,
     waveBreakdown,
     rawResults: results,
     failureDetails: results.filter((r) => r.FAILURE),
@@ -561,7 +567,7 @@ export default {
         }
       }
 
-      const bypassHeader = env.WAF_BYPASS_TOKEN || '';
+      const protectedPaths = resolveProtectedPaths(payload, env);
       const swarmProfile = payload.swarmProfile || null;
       const batchStart = Math.max(1, Number(payload.batchStart || 1));
       const batchCountRaw = Number(payload.batchCount || 0);
@@ -587,7 +593,7 @@ export default {
             break;
           }
 
-          const result = await runBot(baseUrl, brokerApiBase, wave, i, bypassHeader, swarmProfile, env);
+          const result = await runBot(baseUrl, brokerApiBase, wave, i, swarmProfile, env, protectedPaths);
           results.push(result);
           remainingRequestBudget -= 1;
 
@@ -598,6 +604,7 @@ export default {
       }
 
       const summary = summarize(results, filteredWaves, 'fcgbc-legit-auth-worker', baseUrl);
+      summary.protectedPaths = protectedPaths;
       summary.targetRpm = Number.isFinite(targetRpm) ? Math.max(1, Math.min(10000, Math.floor(targetRpm))) : null;
       summary.targetDelayMs = targetDelayMs;
       summary.maxRequestsPerRun = maxRequestsPerRun;

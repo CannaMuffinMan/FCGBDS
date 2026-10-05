@@ -10,6 +10,14 @@
  * Optional batching: add waveId, batchStart, batchCount to run a wave slice.
  */
 
+import {
+  stripHarnessLabels,
+  resolveProtectedPaths,
+  gradeObservation,
+  logHarnessCorrelation,
+  summarizeDefense,
+} from '../harness/gateGrade.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function assertAllowedTarget(baseUrl, env) {
@@ -48,17 +56,6 @@ function getTrafficFilteredWaves(waves, trafficMode) {
   if (trafficMode === 'bad' || trafficMode === 'hostile') return waves.filter((w) => w.expectBlock);
   if (trafficMode === 'good' || trafficMode === 'legit' || trafficMode === 'legit-auth') return waves.filter((w) => !w.expectBlock);
   return waves;
-}
-
-function buildSwarmHeaders(swarmProfile, waveId) {
-  if (!swarmProfile || typeof swarmProfile !== 'object') return {};
-  return {
-    'X-Swarm-Id': swarmProfile.swarmId || 'unspecified',
-    'X-Swarm-Fingerprint': swarmProfile.sharedFingerprint || 'none',
-    'X-Swarm-Wave': waveId,
-    'X-Swarm-Pattern': swarmProfile.pattern || 'burst-plateau-decay',
-    'X-Behavior-Partial-Challenge-Rate': String(swarmProfile.partialChallengeRate ?? 0.7),
-  };
 }
 
 function applyLegitAuthHeaders(headers, wave, legitAuth) {
@@ -228,7 +225,7 @@ function buildWaves(base) {
     // ── PF: Legit Baseline (control group) ───────────────────
     {
       id: 'PF', name: 'Legit Baseline (control)', count: 20, expectBlock: false,
-      note: 'Full browser headers, unique spaced payloads. Blocked = false positive against platform endpoint.',
+      note: 'Full browser headers, unique payloads. /api/platform/interact is outside the default protected list, so a gate miss here is not a defense result unless protectedPaths includes it.',
       path: '/api/platform/interact', method: 'POST',
       headers: { ...legitBase },
       body: (i) => JSON.stringify({
@@ -243,19 +240,11 @@ function buildWaves(base) {
 }
 
 // ── Run a single request ──────────────────────────────────────
-async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legitAuth) {
+async function runBot(baseUrl, wave, botIndex, swarmProfile, legitAuth, protectedPaths) {
   const url = `${baseUrl}${wave.path}`;
   const body = wave.body(botIndex);
-  const headers = { ...wave.headers };
+  const headers = stripHarnessLabels({ ...wave.headers });
   applyLegitAuthHeaders(headers, wave, legitAuth);
-  if (wave.expectBlock) {
-    Object.assign(headers, buildSwarmHeaders(swarmProfile, wave.id));
-  }
-  if (bypassHeader) headers['X-FCG-Test-Token'] = bypassHeader;
-  if (wave.expectBlock) {
-    headers['X-Bot-Test'] = 'true';
-  }
-  headers['X-Test-Run-Id'] = `platform-abuse-worker-${wave.id}`;
 
   try {
     const jitterMin = Number(swarmProfile?.jitterMinMs || 0);
@@ -266,25 +255,29 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
     }
 
     const started = Date.now();
+    logHarnessCorrelation({
+      worker: 'platform-abuse-worker',
+      waveId: wave.id,
+      expectBlock: wave.expectBlock,
+      startedAt: new Date(started).toISOString(),
+    });
     const resp = await fetch(url, { method: wave.method, headers, body });
     const durationMs = Date.now() - started;
-    let blockCode = '';
     let responseJson = null;
     try {
       responseJson = await resp.clone().json();
-      blockCode = responseJson.code || '';
     } catch (_) {}
     const chainLatencyMs = extractChainLatency(responseJson);
-    // 403 = bot defense block; 429 = rate limit; 401/404 = passed defense, hit auth/route layer (not a block failure for platform endpoint)
-    const blocked = resp.status === 403 || resp.status === 429;
-    // For platform waves, 401/404 means bot defense PASSED the request through (defense did not block)
-    // That's a FAILURE for waves we expect to be blocked, but NOT for the legit wave.
+    const grade = gradeObservation({
+      status: resp.status,
+      body: responseJson,
+      expectBlock: wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+    });
     return {
       wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: resp.status, blocked, blockCode,
-      expectBlock: wave.expectBlock,
-      FAILURE: !blocked && wave.expectBlock,
-      FALSE_POS: blocked && !wave.expectBlock,
+      ...grade,
       startedAt: new Date(started).toISOString(),
       durationMs,
       chainLatencyMs,
@@ -295,10 +288,13 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
   } catch (err) {
     return {
       wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: 0, blocked: false, blockCode: '',
-      expectBlock: wave.expectBlock,
-      FAILURE: wave.expectBlock,
-      FALSE_POS: false,
+      ...gradeObservation({
+        status: 0,
+        body: null,
+        expectBlock: wave.expectBlock,
+        path: wave.path,
+        protectedPaths,
+      }),
       startedAt: new Date().toISOString(),
       durationMs: null,
       chainLatencyMs: null,
@@ -341,7 +337,7 @@ export default {
 
     const BASE_URL = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(BASE_URL, env);
-    const BYPASS_HEADER = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const trafficMode = payload.trafficMode || 'all';
     const swarmProfile = payload.swarmProfile || null;
     const legitAuth = payload.legitAuth || null;
@@ -363,7 +359,7 @@ export default {
 
       const promises = [];
       for (let i = start; i <= end; i++) {
-        promises.push(runBot(BASE_URL, wave, i, BYPASS_HEADER, swarmProfile, legitAuth));
+        promises.push(runBot(BASE_URL, wave, i, swarmProfile, legitAuth, protectedPaths));
       }
       const waveResults = await Promise.allSettled(promises);
       for (const r of waveResults) {
@@ -386,20 +382,23 @@ export default {
       if (r.FALSE_POS) byWave[r.wave].falsePosCount++;
     }
 
+    const defense = summarizeDefense(allResults, wavesToRun);
     const report = {
       worker: 'platform-abuse-worker',
+      protectedPaths,
       summary: {
         totalBots,
         totalBlocked,
         blockRate: totalBots ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0%',
-        failures: failures.length,
-        falsePositives: falsePos.length,
-        PASS: failures.length === 0 && falsePos.length === 0,
+        failures: defense.failures,
+        falsePositives: defense.falsePositives,
+        PASS: defense.failures === 0 && defense.falsePositives === 0,
       },
       byWave,
+      ...defense,
       rawResults: allResults,
-      failureDetails: failures.slice(0, 20),
-      falsePosDetails: falsePos.slice(0, 20),
+      failureDetails: failures.filter((row) => row.claimedAsDefense).slice(0, 20),
+      falsePosDetails: falsePos.filter((row) => row.claimedAsDefense).slice(0, 20),
     };
 
     return new Response(JSON.stringify(report, null, 2), {

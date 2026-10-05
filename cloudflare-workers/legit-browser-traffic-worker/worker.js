@@ -3,6 +3,14 @@
  * Trigger: POST /run { "triggerKey": "<TRIGGER_KEY>" }
  */
 
+import {
+  stripHarnessLabels,
+  resolveProtectedPaths,
+  gradeObservation,
+  logHarnessCorrelation,
+  summarizeDefense,
+} from '../harness/gateGrade.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function assertAllowedTarget(baseUrl, env) {
@@ -106,18 +114,12 @@ function buildWaves() {
   ];
 }
 
-async function runBot(baseUrl, wave, botIndex, bypassHeader) {
+async function runBot(baseUrl, wave, botIndex, protectedPaths) {
   const url = `${baseUrl}${wave.path}`;
-  const headers = {
+  const headers = stripHarnessLabels({
     ...wave.headers,
-    'X-Test-Run-Id': `legit-browser-${wave.id}`,
-    'X-Legit-Traffic': 'true',
     'X-CSRF-Token': crypto.randomUUID().replace(/-/g, ''),
-  };
-
-  if (bypassHeader) {
-    headers['X-FCG-Test-Token'] = bypassHeader;
-  }
+  });
 
   const jitter = Math.floor(50 + Math.random() * 250);
   if (jitter > 0) await sleep(jitter);
@@ -126,6 +128,12 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader) {
   const started = Date.now();
 
   try {
+    logHarnessCorrelation({
+      worker: 'legit-browser-traffic-worker',
+      waveId: wave.id,
+      expectBlock: false,
+      startedAt: new Date(started).toISOString(),
+    });
     const response = await fetch(url, {
       method: wave.method,
       headers,
@@ -133,24 +141,23 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader) {
     });
 
     const durationMs = Date.now() - started;
-    const blocked = response.status === 403 || response.status === 429;
-
-    let blockCode = '';
+    let parsed = null;
     try {
-      const parsed = await response.clone().json();
-      blockCode = parsed.code || '';
+      parsed = await response.clone().json();
     } catch (_) {}
+    const grade = gradeObservation({
+      status: response.status,
+      body: parsed,
+      expectBlock: false,
+      path: wave.path,
+      protectedPaths,
+    });
 
     return {
       wave: wave.id,
       waveName: wave.name,
       bot: botIndex,
-      status: response.status,
-      blocked,
-      blockCode,
-      expectBlock: false,
-      FAILURE: false,
-      FALSE_POS: blocked,
+      ...grade,
       startedAt: new Date(started).toISOString(),
       durationMs,
       path: wave.path,
@@ -162,12 +169,13 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader) {
       wave: wave.id,
       waveName: wave.name,
       bot: botIndex,
-      status: 0,
-      blocked: false,
-      blockCode: '',
-      expectBlock: false,
-      FAILURE: false,
-      FALSE_POS: false,
+      ...gradeObservation({
+        status: 0,
+        body: null,
+        expectBlock: false,
+        path: wave.path,
+        protectedPaths,
+      }),
       startedAt: new Date(started).toISOString(),
       durationMs: Date.now() - started,
       path: wave.path,
@@ -216,7 +224,7 @@ export default {
     const baseUrl = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(baseUrl, env);
 
-    const bypassHeader = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const waveId = payload.waveId || null;
     const batchStart = Number(payload.batchStart || 1);
     const batchCount = payload.batchCount ? Number(payload.batchCount) : null;
@@ -231,7 +239,7 @@ export default {
 
       const jobs = [];
       for (let i = start; i <= end; i += 1) {
-        jobs.push(runBot(baseUrl, wave, i, bypassHeader));
+        jobs.push(runBot(baseUrl, wave, i, protectedPaths));
       }
 
       const settled = await Promise.allSettled(jobs);
@@ -269,7 +277,10 @@ export default {
       };
     });
 
+    const defense = summarizeDefense(allResults, selected);
     const report = {
+      protectedPaths,
+      grading: defense,
       generatedAt: new Date().toISOString(),
       runFromColo: request.cf?.colo || 'unknown',
       runFromCountry: request.cf?.country || 'unknown',
@@ -280,13 +291,13 @@ export default {
       totalBots,
       totalBlocked,
       blockRate: totalBots > 0 ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0.0%',
-      failures: failures.length,
-      falsePositives: falsePos.length,
+      failures: defense.failures,
+      falsePositives: defense.falsePositives,
       networkErrors: netErrors,
       verdict: 'LEGIT TRAFFIC TEST COMPLETE',
-      falsePositiveVerdict: falsePos.length === 0
-        ? 'No collateral damage - legit requests unaffected.'
-        : `WARNING: ${falsePos.length} legitimate request(s) were incorrectly blocked.`,
+      falsePositiveVerdict: defense.falsePositives === 0
+        ? 'No protected-path legit request was blocked or challenged by the gate.'
+        : `FAILURE: ${defense.falsePositives} legitimate protected-path request(s) were blocked or challenged by the gate.`,
       waveBreakdown,
       rawResults: allResults,
       failureDetails: failures,

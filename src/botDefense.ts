@@ -131,10 +131,6 @@ export class BotDefenseMiddleware {
     return path === '/api/auth/email/register' || path === '/api/auth/email/login';
   }
 
-  private hasBotTestHeader(req: Request): boolean {
-    return String(req.headers['x-bot-test'] || '').toLowerCase() === 'true';
-  }
-
   private pruneHitsForKey(hitMap: Map<string, number[]>, key: string, cutoff: number): number[] {
     const hits = hitMap.get(key) || [];
     const filtered = hits.filter(ts => ts >= cutoff);
@@ -260,6 +256,10 @@ export class BotDefenseMiddleware {
       'okhttp',
       'httpclient',
       'wget/',
+      'headlesschrome',
+      'playwright',
+      'selenium',
+      'node-fetch',
     ];
     return suspicious.some((needle) => ua.includes(needle));
   }
@@ -340,17 +340,8 @@ export class BotDefenseMiddleware {
       }
 
       const authWritePath = this.isAuthWritePath(req.path);
-      const botTestTraffic = this.hasBotTestHeader(req);
 
-      // FCGBDS test harness marks hostile auth-write traffic with X-Bot-Test=true.
-      // Enforce deterministic blocking for these lanes so slippage is visible as 403/429, never 200.
-      if (authWritePath && botTestTraffic) {
-        score += 120;
-        ruleIds.push('auth_write_test_forced_block');
-      }
-
-      // Non-test auth write requests from obviously automated clients get extra pressure.
-      if (authWritePath && this.hasSuspiciousUserAgent(req) && !botTestTraffic) {
+      if (authWritePath && this.hasSuspiciousUserAgent(req)) {
         score += 35;
         ruleIds.push('auth_write_ua_escalation');
       }

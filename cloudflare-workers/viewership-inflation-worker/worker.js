@@ -4,6 +4,14 @@
  * Trigger: POST /run { "triggerKey": "<TRIGGER_KEY>" }
  */
 
+import {
+  stripHarnessLabels,
+  resolveProtectedPaths,
+  gradeObservation,
+  logHarnessCorrelation,
+  summarizeDefense,
+} from '../harness/gateGrade.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function assertAllowedTarget(baseUrl, env) {
@@ -28,17 +36,6 @@ function getTrafficFilteredWaves(waves, trafficMode) {
   if (trafficMode === 'bad') return waves.filter((w) => w.expectBlock);
   if (trafficMode === 'good') return waves.filter((w) => !w.expectBlock);
   return waves;
-}
-
-function buildSwarmHeaders(swarmProfile, waveId) {
-  if (!swarmProfile || typeof swarmProfile !== 'object') return {};
-  return {
-    'X-Swarm-Id': swarmProfile.swarmId || 'unspecified',
-    'X-Swarm-Fingerprint': swarmProfile.sharedFingerprint || 'none',
-    'X-Swarm-Wave': waveId,
-    'X-Swarm-Pattern': swarmProfile.pattern || 'burst-plateau-decay',
-    'X-Behavior-Partial-Challenge-Rate': String(swarmProfile.partialChallengeRate ?? 0.7),
-  };
 }
 
 function hasLegitAuthContext(legitAuth) {
@@ -84,7 +81,7 @@ function buildWaves() {
       name: 'Headless Fast-Rejoin Pattern',
       count: 240,
       expectBlock: true,
-      note: 'Two-step validate with same session token; second call uses HeadlessChrome to force high-confidence bot score.',
+      note: 'Two-step validate. The second call sets a HeadlessChrome user-agent via fetch(). That is a header signal, not a real headless browser, and it does not force a score.',
       scenario: 'validate-two-step',
       initUserAgent: normalUA,
       userAgent: headlessUA,
@@ -106,23 +103,15 @@ function buildWaves() {
   ];
 }
 
-function buildHeaders(wave, bypassHeader, swarmProfile, waveId, runId, ua) {
-  const headers = {
+function buildHeaders(wave, ua) {
+  return stripHarnessLabels({
     'Accept': 'application/json, text/plain, */*',
     'Content-Type': 'application/json',
     'User-Agent': ua || wave.userAgent || '',
-    'X-Test-Run-Id': runId,
-  };
-  if (wave.expectBlock) {
-    headers['X-Bot-Test'] = 'true';
-    Object.assign(headers, buildSwarmHeaders(swarmProfile, waveId));
-  }
-  if (bypassHeader) headers['X-FCG-Test-Token'] = bypassHeader;
-  return headers;
+  });
 }
 
-async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legitAuth) {
-  const runId = `viewership-inflation-worker-${wave.id}`;
+async function runBot(baseUrl, wave, botIndex, swarmProfile, legitAuth, protectedPaths) {
   const sessionToken = `vi-${wave.id}-${botIndex}-${crypto.randomUUID().slice(0, 8)}`;
 
   try {
@@ -137,7 +126,13 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
 
     if (wave.scenario === 'session-health') {
       const url = `${baseUrl}${wave.path}?session=${encodeURIComponent(sessionToken)}`;
-      const headers = buildHeaders(wave, bypassHeader, swarmProfile, wave.id, runId, wave.userAgent);
+      const headers = buildHeaders(wave, wave.userAgent);
+      logHarnessCorrelation({
+        worker: 'viewership-inflation-worker',
+        waveId: wave.id,
+        expectBlock: wave.expectBlock,
+        startedAt: new Date(started).toISOString(),
+      });
       applyLegitAuthHeaders(headers, legitAuth);
       const resp = await fetch(url, { method: 'GET', headers });
       let responseJson = null;
@@ -147,17 +142,18 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
         blockCode = responseJson?.code || '';
       } catch (_) {}
 
-      const blocked = resp.status === 403 || resp.status === 429;
+      const grade = gradeObservation({
+        status: resp.status,
+        body: responseJson,
+        expectBlock: wave.expectBlock,
+        path: wave.path,
+        protectedPaths,
+      });
       return {
         wave: wave.id,
         waveName: wave.name,
         bot: botIndex,
-        status: resp.status,
-        blocked,
-        blockCode,
-        expectBlock: wave.expectBlock,
-        FAILURE: !blocked && wave.expectBlock,
-        FALSE_POS: blocked && !wave.expectBlock,
+        ...grade,
         startedAt: new Date(started).toISOString(),
         durationMs: Date.now() - started,
         chainLatencyMs: null,
@@ -169,8 +165,14 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
 
     if (wave.scenario === 'validate-two-step') {
       const url = `${baseUrl}${wave.path}`;
-      const initHeaders = buildHeaders(wave, bypassHeader, swarmProfile, wave.id, runId, wave.initUserAgent);
-      const strikeHeaders = buildHeaders(wave, bypassHeader, swarmProfile, wave.id, runId, wave.userAgent);
+      const initHeaders = buildHeaders(wave, wave.initUserAgent);
+      const strikeHeaders = buildHeaders(wave, wave.userAgent);
+      logHarnessCorrelation({
+        worker: 'viewership-inflation-worker',
+        waveId: wave.id,
+        expectBlock: wave.expectBlock,
+        startedAt: new Date(started).toISOString(),
+      });
       applyLegitAuthHeaders(initHeaders, legitAuth);
       applyLegitAuthHeaders(strikeHeaders, legitAuth);
 
@@ -198,18 +200,19 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
         blockCode = responseJson?.code || '';
       } catch (_) {}
 
-      const blocked = strikeResp.status === 403 || strikeResp.status === 429;
+      const grade = gradeObservation({
+        status: strikeResp.status,
+        body: responseJson,
+        expectBlock: wave.expectBlock,
+        path: wave.path,
+        protectedPaths,
+      });
 
       return {
         wave: wave.id,
         waveName: wave.name,
         bot: botIndex,
-        status: strikeResp.status,
-        blocked,
-        blockCode,
-        expectBlock: wave.expectBlock,
-        FAILURE: !blocked && wave.expectBlock,
-        FALSE_POS: blocked && !wave.expectBlock,
+        ...grade,
         startedAt: new Date(started).toISOString(),
         durationMs: Date.now() - started,
         chainLatencyMs: null,
@@ -226,12 +229,13 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
       wave: wave.id,
       waveName: wave.name,
       bot: botIndex,
-      status: 0,
-      blocked: false,
-      blockCode: '',
-      expectBlock: wave.expectBlock,
-      FAILURE: wave.expectBlock,
-      FALSE_POS: false,
+      ...gradeObservation({
+        status: 0,
+        body: null,
+        expectBlock: wave.expectBlock,
+        path: wave.path,
+        protectedPaths,
+      }),
       startedAt: new Date().toISOString(),
       durationMs: null,
       chainLatencyMs: null,
@@ -285,7 +289,7 @@ export default {
 
     const baseUrl = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(baseUrl, env);
-    const bypassHeader = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const trafficMode = payload.trafficMode || 'all';
     const swarmProfile = payload.swarmProfile || null;
     const legitAuth = payload.legitAuth || null;
@@ -311,7 +315,7 @@ export default {
 
       if (wave.sequential) {
         for (let i = start; i <= end; i++) {
-          allResults.push(await runBot(baseUrl, wave, i, bypassHeader, swarmProfile, legitAuth));
+          allResults.push(await runBot(baseUrl, wave, i, swarmProfile, legitAuth, protectedPaths));
           if (wave.delayMs > 0 && i < end) {
             await sleep(wave.delayMs);
           }
@@ -319,7 +323,7 @@ export default {
       } else {
         const promises = [];
         for (let i = start; i <= end; i++) {
-          promises.push(runBot(baseUrl, wave, i, bypassHeader, swarmProfile, legitAuth));
+          promises.push(runBot(baseUrl, wave, i, swarmProfile, legitAuth, protectedPaths));
         }
 
         const settled = await Promise.allSettled(promises);
@@ -359,7 +363,10 @@ export default {
       };
     });
 
+    const defense = summarizeDefense(allResults, wavesToRun);
     const report = {
+      protectedPaths,
+      grading: defense,
       generatedAt: new Date().toISOString(),
       runFromColo: request.cf?.colo || 'unknown',
       runFromCountry: request.cf?.country || 'unknown',
@@ -370,15 +377,15 @@ export default {
       totalBots,
       totalBlocked,
       blockRate: totalBots > 0 ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0.0%',
-      failures: failures.length,
-      falsePositives: falsePos.length,
+      failures: defense.failures,
+      falsePositives: defense.falsePositives,
       networkErrors: netErrors,
-      verdict: failures.length === 0
-        ? 'DEFENSE HELD - Zero hostile bots got through.'
-        : `!!! DEFENSE FAILED - ${failures.length} bot(s) bypassed detection.`,
-      falsePositiveVerdict: falsePos.length === 0
-        ? 'No collateral damage - legit requests unaffected.'
-        : `WARNING: ${falsePos.length} legitimate request(s) were incorrectly blocked.`,
+      verdict: defense.falseNegatives === 0
+        ? 'On protected paths, no hostile request missed the gate. Unprotected paths are listed separately and are not defense results.'
+        : `Gate missed ${defense.falseNegatives} hostile request(s) on protected paths.`,
+      falsePositiveVerdict: defense.falsePositives === 0
+        ? 'No protected-path legit request was blocked or challenged by the gate.'
+        : `WARNING: ${defense.falsePositives} legitimate protected-path request(s) were blocked or challenged by the gate.`,
       waveBreakdown,
       rawResults: allResults,
       failureDetails: failures,
