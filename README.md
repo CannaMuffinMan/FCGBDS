@@ -143,8 +143,10 @@ docker-compose up -d
 
 ## Cloudflare Workers for testing and simulation
 
-The `cloudflare-workers/` directory includes worker copies you can deploy quickly.
+The `cloudflare-workers/` directory includes worker copies you can deploy yourself.
 All environment-specific hostnames are replaced with placeholders.
+
+Worker `fetch()` calls are HTTP probes. A HeadlessChrome user-agent string is not a headless browser. Grading uses the gate JSON (`request_blocked` / `challenge_required`, `score`, `ruleIds`). Paths outside the protected list are marked in the report and are not defense results. See `cloudflare-workers/README.md`.
 
 Typical setup per worker:
 

@@ -3,6 +3,13 @@
  * Trigger: POST /run { "triggerKey": "<TRIGGER_KEY>" }
  */
 
+import {
+  aggregateGateReport,
+  gradeObservedResponse,
+  resolveProtectedPaths,
+  stripScorerVisibleLabels,
+} from '../lib/gateHarness.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function assertAllowedTarget(baseUrl, env) {
@@ -106,18 +113,13 @@ function buildWaves() {
   ];
 }
 
-async function runBot(baseUrl, wave, botIndex, bypassHeader) {
+async function runBot(baseUrl, wave, botIndex, protectedPaths) {
   const url = `${baseUrl}${wave.path}`;
-  const headers = {
+  const runId = `legit-browser-${wave.id}`;
+  const headers = stripScorerVisibleLabels({
     ...wave.headers,
-    'X-Test-Run-Id': `legit-browser-${wave.id}`,
-    'X-Legit-Traffic': 'true',
     'X-CSRF-Token': crypto.randomUUID().replace(/-/g, ''),
-  };
-
-  if (bypassHeader) {
-    headers['X-FCG-Test-Token'] = bypassHeader;
-  }
+  });
 
   const jitter = Math.floor(50 + Math.random() * 250);
   if (jitter > 0) await sleep(jitter);
@@ -133,41 +135,46 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader) {
     });
 
     const durationMs = Date.now() - started;
-    const blocked = response.status === 403 || response.status === 429;
-
-    let blockCode = '';
+    let responseJson = null;
     try {
-      const parsed = await response.clone().json();
-      blockCode = parsed.code || '';
+      responseJson = await response.clone().json();
     } catch (_) {}
+    const graded = gradeObservedResponse({
+      status: response.status,
+      body: responseJson,
+      expectBlock: wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      lane: 'legit',
+      runId,
+    });
 
     return {
-      wave: wave.id,
-      waveName: wave.name,
+      ...graded,
       bot: botIndex,
-      status: response.status,
-      blocked,
-      blockCode,
-      expectBlock: false,
-      FAILURE: false,
-      FALSE_POS: blocked,
       startedAt: new Date(started).toISOString(),
       durationMs,
-      path: wave.path,
       bodySample: String(body || '').slice(0, 80),
       error: '',
     };
   } catch (err) {
-    return {
-      wave: wave.id,
-      waveName: wave.name,
-      bot: botIndex,
+    const graded = gradeObservedResponse({
       status: 0,
-      blocked: false,
-      blockCode: '',
-      expectBlock: false,
-      FAILURE: false,
-      FALSE_POS: false,
+      body: null,
+      expectBlock: wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      lane: 'legit',
+      runId,
+      transportError: true,
+    });
+    return {
+      ...graded,
+      bot: botIndex,
       startedAt: new Date(started).toISOString(),
       durationMs: Date.now() - started,
       path: wave.path,
@@ -216,7 +223,7 @@ export default {
     const baseUrl = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(baseUrl, env);
 
-    const bypassHeader = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const waveId = payload.waveId || null;
     const batchStart = Number(payload.batchStart || 1);
     const batchCount = payload.batchCount ? Number(payload.batchCount) : null;
@@ -231,7 +238,7 @@ export default {
 
       const jobs = [];
       for (let i = start; i <= end; i += 1) {
-        jobs.push(runBot(baseUrl, wave, i, bypassHeader));
+        jobs.push(runBot(baseUrl, wave, i, protectedPaths));
       }
 
       const settled = await Promise.allSettled(jobs);
@@ -269,7 +276,12 @@ export default {
       };
     });
 
+    const gate = aggregateGateReport(allResults);
     const report = {
+      protectedPaths,
+      gate,
+      harness: 'fetch-with-browser-like-headers',
+      doesNotProve: 'A real browser session. These requests are Worker fetch() calls.',
       generatedAt: new Date().toISOString(),
       runFromColo: request.cf?.colo || 'unknown',
       runFromCountry: request.cf?.country || 'unknown',
