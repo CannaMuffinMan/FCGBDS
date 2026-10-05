@@ -16,6 +16,8 @@ export interface BotDefenseConfig {
   payloadWindowMs: number;
   protectedPaths: string[];
   expectedHostname?: string;
+  /** When true, the first X-Forwarded-For hop is the client IP. Otherwise the socket address is. */
+  trustProxy?: boolean;
   redisUrl?: string;
   redisKeyPrefix?: string;
 }
@@ -53,6 +55,7 @@ export class BotDefenseMiddleware {
       payloadWindowMs: config.payloadWindowMs || 120000, // 2 minutes
       protectedPaths: config.protectedPaths || ['/api/auth/login', '/api/auth/register', '/api/auth/email/login', '/api/auth/email/register'],
       expectedHostname: config.expectedHostname || '',
+      trustProxy: config.trustProxy === true,
       redisUrl: config.redisUrl || process.env.REDIS_URL || process.env.FCGBDS_REDIS_URL || '',
       redisKeyPrefix: config.redisKeyPrefix || 'fcgbds:bot-defense',
     };
@@ -93,7 +96,6 @@ export class BotDefenseMiddleware {
       canvas: req.headers['x-canvas-fingerprint'] || '',
       webgl: req.headers['x-webgl-fingerprint'] || '',
       fonts: req.headers['x-fonts'] || '',
-      ip: this.getClientIP(req),
     };
 
     return fingerprint;
@@ -111,11 +113,22 @@ export class BotDefenseMiddleware {
    * Get client IP address
    */
   private getClientIP(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'] as string;
-    if (forwarded) {
-      return forwarded.split(',')[0].trim();
+    if (this.config.trustProxy) {
+      const forwarded = req.headers['x-forwarded-for'];
+      const firstHop = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+      if (typeof firstHop === 'string' && firstHop.trim()) {
+        return firstHop.split(',')[0].trim();
+      }
     }
-    return req.ip || req.connection?.remoteAddress || 'unknown';
+    return req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+  }
+
+  /** Client-supplied forwarding header when this process is not behind a trusted proxy. */
+  private hasUntrustedForwardedFor(req: Request): boolean {
+    if (this.config.trustProxy) return false;
+    const forwarded = req.headers['x-forwarded-for'];
+    if (Array.isArray(forwarded)) return forwarded.some((value) => String(value || '').trim());
+    return String(forwarded || '').trim().length > 0;
   }
 
   /**
@@ -129,10 +142,6 @@ export class BotDefenseMiddleware {
 
   private isAuthWritePath(path: string): boolean {
     return path === '/api/auth/email/register' || path === '/api/auth/email/login';
-  }
-
-  private hasBotTestHeader(req: Request): boolean {
-    return String(req.headers['x-bot-test'] || '').toLowerCase() === 'true';
   }
 
   private pruneHitsForKey(hitMap: Map<string, number[]>, key: string, cutoff: number): number[] {
@@ -260,6 +269,13 @@ export class BotDefenseMiddleware {
       'okhttp',
       'httpclient',
       'wget/',
+      // Automation clients that put their name in the UA string.
+      // A normal Chrome UA does not contain these tokens. fetch() that copies a
+      // HeadlessChrome UA is still only this string check, not a browser.
+      'headlesschrome',
+      'playwright',
+      'selenium',
+      'node-fetch',
     ];
     return suspicious.some((needle) => ua.includes(needle));
   }
@@ -340,17 +356,9 @@ export class BotDefenseMiddleware {
       }
 
       const authWritePath = this.isAuthWritePath(req.path);
-      const botTestTraffic = this.hasBotTestHeader(req);
 
-      // FCGBDS test harness marks hostile auth-write traffic with X-Bot-Test=true.
-      // Enforce deterministic blocking for these lanes so slippage is visible as 403/429, never 200.
-      if (authWritePath && botTestTraffic) {
-        score += 120;
-        ruleIds.push('auth_write_test_forced_block');
-      }
-
-      // Non-test auth write requests from obviously automated clients get extra pressure.
-      if (authWritePath && this.hasSuspiciousUserAgent(req) && !botTestTraffic) {
+      // Automated clients on auth writes get extra pressure from the same UA signal.
+      if (authWritePath && this.hasSuspiciousUserAgent(req)) {
         score += 35;
         ruleIds.push('auth_write_ua_escalation');
       }
@@ -378,7 +386,7 @@ export class BotDefenseMiddleware {
         ruleIds.push('ip_rate_exceeded');
       }
 
-      if (/^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[0-1])\.|192\.168\.)/.test(clientIP)) {
+      if (this.hasUntrustedForwardedFor(req)) {
         score += 25;
         ruleIds.push('private_forwarded_for_spoof');
       }
@@ -405,7 +413,8 @@ export class BotDefenseMiddleware {
 
       const effectivePayloadCount = payloadCount ?? payloadHits.length;
       if (effectivePayloadCount > this.config.maxPayloadHits) {
-        score += effectivePayloadCount > this.config.maxPayloadHits * 2 ? 45 : 25;
+        const heavy = effectivePayloadCount > this.config.maxPayloadHits * 2;
+        score += heavy ? 70 : 60;
         ruleIds.push('payload_repetition_exceeded');
       }
 

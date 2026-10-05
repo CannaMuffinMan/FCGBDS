@@ -63,6 +63,7 @@ const config = {
   botDefenseDeviceWindowMs: parseInt(process.env.BOT_DEFENSE_DEVICE_WINDOW_MS || '60000'),
   botDefensePayloadWindowMs: parseInt(process.env.BOT_DEFENSE_PAYLOAD_WINDOW_MS || '120000'),
   botDefenseExpectedHostname: process.env.BOT_DEFENSE_EXPECTED_HOSTNAME || '',
+  botDefenseTrustProxy: process.env.BOT_DEFENSE_TRUST_PROXY === 'true',
   botDefensePaths: ensureRequiredProtectedPaths(
     parsePathList(process.env.BOT_DEFENSE_PATHS, [
       '/api/auth/login',
@@ -98,6 +99,7 @@ const botDefense = createBotDefenseMiddleware({
   deviceWindowMs: config.botDefenseDeviceWindowMs,
   payloadWindowMs: config.botDefensePayloadWindowMs,
   expectedHostname: config.botDefenseExpectedHostname,
+  trustProxy: config.botDefenseTrustProxy,
   protectedPaths: config.botDefensePaths,
 });
 

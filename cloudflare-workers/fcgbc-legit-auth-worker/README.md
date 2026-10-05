@@ -62,12 +62,13 @@ From `cloudflare-workers/fcgbc-legit-auth-worker`:
 
 ```powershell
 wrangler secret put TRIGGER_KEY
-wrangler secret put WAF_BYPASS_TOKEN
 wrangler secret put BROKER_KEY
 wrangler deploy
 ```
 
 `BROKER_KEY` must match API `SYNTHETIC_BROKER_KEY`.
+
+Scored requests do not send `X-FCG-Test-Token`, `X-Bot-Test`, `X-Swarm-*`, or other harness labels. A WAF bypass on the host under test would hide the gate result.
 
 ## 3) Warm Session Pool (10 identities)
 

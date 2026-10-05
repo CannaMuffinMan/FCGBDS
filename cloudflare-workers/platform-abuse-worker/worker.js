@@ -1,14 +1,23 @@
 /**
  * FCG Bot Defense — Platform Abuse & Engagement Farming Validation Worker
  *
- * Simulates bot patterns specifically targeting the platform interaction
- * and engagement endpoints: reward farming, fake-view loops, multi-account
- * coordination, cross-platform spam, and unauthenticated mass probing.
- * All of these should be caught by the bot defense middleware.
+ * Sends repeated platform-interaction payloads with Worker fetch().
+ * Reward-farming, fake-view, and multi-account patterns here are payload
+ * and header shapes, not live platform sessions.
+ * /api/platform/interact is outside the default protected-path list, so those
+ * waves are reported as ungraded unless a run sets protectedPaths to cover them.
+ * This worker does not prove the gate blocked that route.
  *
  * Trigger: POST /run  { "triggerKey": "<TRIGGER_KEY env var>" }
  * Optional batching: add waveId, batchStart, batchCount to run a wave slice.
  */
+
+import {
+  aggregateGateReport,
+  gradeObservedResponse,
+  resolveProtectedPaths,
+  stripScorerVisibleLabels,
+} from '../lib/gateHarness.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -48,17 +57,6 @@ function getTrafficFilteredWaves(waves, trafficMode) {
   if (trafficMode === 'bad' || trafficMode === 'hostile') return waves.filter((w) => w.expectBlock);
   if (trafficMode === 'good' || trafficMode === 'legit' || trafficMode === 'legit-auth') return waves.filter((w) => !w.expectBlock);
   return waves;
-}
-
-function buildSwarmHeaders(swarmProfile, waveId) {
-  if (!swarmProfile || typeof swarmProfile !== 'object') return {};
-  return {
-    'X-Swarm-Id': swarmProfile.swarmId || 'unspecified',
-    'X-Swarm-Fingerprint': swarmProfile.sharedFingerprint || 'none',
-    'X-Swarm-Wave': waveId,
-    'X-Swarm-Pattern': swarmProfile.pattern || 'burst-plateau-decay',
-    'X-Behavior-Partial-Challenge-Rate': String(swarmProfile.partialChallengeRate ?? 0.7),
-  };
 }
 
 function applyLegitAuthHeaders(headers, wave, legitAuth) {
@@ -243,19 +241,12 @@ function buildWaves(base) {
 }
 
 // ── Run a single request ──────────────────────────────────────
-async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legitAuth) {
+async function runBot(baseUrl, wave, botIndex, swarmProfile, legitAuth, protectedPaths) {
   const url = `${baseUrl}${wave.path}`;
   const body = wave.body(botIndex);
-  const headers = { ...wave.headers };
+  const headers = stripScorerVisibleLabels({ ...wave.headers });
   applyLegitAuthHeaders(headers, wave, legitAuth);
-  if (wave.expectBlock) {
-    Object.assign(headers, buildSwarmHeaders(swarmProfile, wave.id));
-  }
-  if (bypassHeader) headers['X-FCG-Test-Token'] = bypassHeader;
-  if (wave.expectBlock) {
-    headers['X-Bot-Test'] = 'true';
-  }
-  headers['X-Test-Run-Id'] = `platform-abuse-worker-${wave.id}`;
+  const runId = `platform-abuse-worker-${wave.id}`;
 
   try {
     const jitterMin = Number(swarmProfile?.jitterMinMs || 0);
@@ -275,34 +266,45 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
       blockCode = responseJson.code || '';
     } catch (_) {}
     const chainLatencyMs = extractChainLatency(responseJson);
-    // 403 = bot defense block; 429 = rate limit; 401/404 = passed defense, hit auth/route layer (not a block failure for platform endpoint)
-    const blocked = resp.status === 403 || resp.status === 429;
-    // For platform waves, 401/404 means bot defense PASSED the request through (defense did not block)
-    // That's a FAILURE for waves we expect to be blocked, but NOT for the legit wave.
-    return {
-      wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: resp.status, blocked, blockCode,
+    const graded = gradeObservedResponse({
+      status: resp.status,
+      body: responseJson,
       expectBlock: wave.expectBlock,
-      FAILURE: !blocked && wave.expectBlock,
-      FALSE_POS: blocked && !wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      runId,
+    });
+    return {
+      ...graded,
+      blockCode: graded.blockCode || blockCode,
+      bot: botIndex,
       startedAt: new Date(started).toISOString(),
       durationMs,
       chainLatencyMs,
-      path: wave.path,
       bodySample: body.slice(0, 80),
       error: '',
+      swarmProfileUsedForTimingOnly: Boolean(swarmProfile),
     };
   } catch (err) {
-    return {
-      wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: 0, blocked: false, blockCode: '',
+    const graded = gradeObservedResponse({
+      status: 0,
+      body: null,
       expectBlock: wave.expectBlock,
-      FAILURE: wave.expectBlock,
-      FALSE_POS: false,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      runId,
+      transportError: true,
+    });
+    return {
+      ...graded,
+      bot: botIndex,
       startedAt: new Date().toISOString(),
       durationMs: null,
       chainLatencyMs: null,
-      path: wave.path,
       bodySample: body.slice(0, 80),
       error: String(err),
     };
@@ -341,7 +343,7 @@ export default {
 
     const BASE_URL = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(BASE_URL, env);
-    const BYPASS_HEADER = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const trafficMode = payload.trafficMode || 'all';
     const swarmProfile = payload.swarmProfile || null;
     const legitAuth = payload.legitAuth || null;
@@ -363,7 +365,7 @@ export default {
 
       const promises = [];
       for (let i = start; i <= end; i++) {
-        promises.push(runBot(BASE_URL, wave, i, BYPASS_HEADER, swarmProfile, legitAuth));
+        promises.push(runBot(BASE_URL, wave, i, swarmProfile, legitAuth, protectedPaths));
       }
       const waveResults = await Promise.allSettled(promises);
       for (const r of waveResults) {
@@ -386,17 +388,22 @@ export default {
       if (r.FALSE_POS) byWave[r.wave].falsePosCount++;
     }
 
+    const gate = aggregateGateReport(allResults);
     const report = {
       worker: 'platform-abuse-worker',
+      protectedPaths,
       summary: {
         totalBots,
         totalBlocked,
         blockRate: totalBots ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0%',
         failures: failures.length,
         falsePositives: falsePos.length,
-        PASS: failures.length === 0 && falsePos.length === 0,
+        confusion: gate.counts,
+        PASS: gate.gradedRequests > 0 && gate.counts.FN === 0 && gate.counts.FP === 0 && gate.counts.error === 0,
+        ungradedNotDefenseResults: gate.counts.ungraded,
       },
       byWave,
+      gate,
       rawResults: allResults,
       failureDetails: failures.slice(0, 20),
       falsePosDetails: falsePos.slice(0, 20),

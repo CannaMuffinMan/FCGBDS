@@ -15,7 +15,8 @@
     "benchmark:quick": "node scripts/benchmark/run-benchmark.mjs --url http://127.0.0.1:3001/api/auth/login --connections 20 --duration 15 --method POST",
     "docker:build": "docker build -t fcgbds-customer .",
     "docker:run": "docker run -p 3001:3001 fcgbds-customer",
-    "dashboard": "npm run build && node dist/dashboard.js"
+    "dashboard": "npm run build && node dist/dashboard.js",
+    "test": "node --require ts-node/register/transpile-only --test tests/gate-honesty.test.cjs"
   },
   "keywords": [
     "bot-defense",

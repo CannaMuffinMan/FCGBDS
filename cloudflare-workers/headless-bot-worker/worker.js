@@ -1,13 +1,21 @@
 /**
- * FCG Bot Defense — Headless & Automated Browser Validation Worker
+ * FCG Bot Defense — UA-string and header-shape probe worker.
  *
- * Simulates bots that use real browser engines (Playwright, Puppeteer, Selenium,
- * headless Chrome) but leak automation fingerprints via UA strings, missing headers,
- * or known headless signals. Also tests modern evasion attempts.
+ * These lanes use fetch() from a Cloudflare Worker. They are not Playwright,
+ * Puppeteer, Selenium, or Headless Chrome. A copied user-agent is only a string
+ * the gate can score. See cloudflare-workers/README.md for what this proves
+ * and for a real browser-lane plan.
  *
  * Trigger: POST /run  { "triggerKey": "<TRIGGER_KEY env var>" }
- * Optional batching: add waveId, batchStart, batchCount to run a wave slice.
+ * Optional: waveId, batchStart, batchCount, protectedPaths.
  */
+
+import {
+  aggregateGateReport,
+  gradeObservedResponse,
+  resolveProtectedPaths,
+  stripScorerVisibleLabels,
+} from '../lib/gateHarness.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -49,17 +57,6 @@ function getTrafficFilteredWaves(waves, trafficMode) {
   return waves;
 }
 
-function buildSwarmHeaders(swarmProfile, waveId) {
-  if (!swarmProfile || typeof swarmProfile !== 'object') return {};
-  return {
-    'X-Swarm-Id': swarmProfile.swarmId || 'unspecified',
-    'X-Swarm-Fingerprint': swarmProfile.sharedFingerprint || 'none',
-    'X-Swarm-Wave': waveId,
-    'X-Swarm-Pattern': swarmProfile.pattern || 'burst-plateau-decay',
-    'X-Behavior-Partial-Challenge-Rate': String(swarmProfile.partialChallengeRate ?? 0.7),
-  };
-}
-
 function applyLegitAuthHeaders(headers, wave, legitAuth) {
   if (wave.expectBlock || !legitAuth || typeof legitAuth !== 'object') return;
   if (legitAuth.authorization && !headers.Authorization) {
@@ -96,7 +93,7 @@ function buildWaves(base) {
     // ── H1: Old-style Headless Chrome UA ─────────────────────
     {
       id: 'H1', name: 'Old HeadlessChrome UA', count: 80, expectBlock: true,
-      note: 'UA contains "HeadlessChrome" substring — the most obvious headless indicator. No Sec-Fetch headers.',
+      note: 'fetch() sends a UA string containing HeadlessChrome and omits Sec-Fetch headers. This is not a headless browser.',
       path: '/api/auth/email/register', method: 'POST',
       headers: {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/124.0.0.0 Safari/537.36',
@@ -183,7 +180,7 @@ function buildWaves(base) {
     // ── H6: CDP Raw Fetch (no Origin, no Referer) ────────────
     {
       id: 'H6', name: 'CDP Raw fetch() — no Origin/Referer', count: 80, expectBlock: true,
-      note: 'Simulates a browser DevTools console fetch() call — Chrome UA, correct Sec-Fetch-Mode but missing Origin and Referer (CDP context does not add them).',
+      note: 'Worker fetch() with a Chrome UA string, Sec-Fetch-Mode set, and no Origin or Referer. This is not a DevTools or CDP session.',
       path: '/api/auth/email/login', method: 'POST',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -222,19 +219,12 @@ function buildWaves(base) {
 }
 
 // ── Run a single request ──────────────────────────────────────
-async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legitAuth) {
+async function runBot(baseUrl, wave, botIndex, swarmProfile, legitAuth, protectedPaths) {
   const url = `${baseUrl}${wave.path}`;
   const body = wave.body(botIndex);
-  const headers = { ...wave.headers };
+  const headers = stripScorerVisibleLabels({ ...wave.headers });
   applyLegitAuthHeaders(headers, wave, legitAuth);
-  if (wave.expectBlock) {
-    Object.assign(headers, buildSwarmHeaders(swarmProfile, wave.id));
-  }
-  if (bypassHeader) headers['X-FCG-Test-Token'] = bypassHeader;
-  if (wave.expectBlock) {
-    headers['X-Bot-Test'] = 'true';
-  }
-  headers['X-Test-Run-Id'] = `headless-bot-worker-${wave.id}`;
+  const runId = `headless-bot-worker-${wave.id}`;
 
   try {
     const jitterMin = Number(swarmProfile?.jitterMinMs || 0);
@@ -254,34 +244,45 @@ async function runBot(baseUrl, wave, botIndex, bypassHeader, swarmProfile, legit
       blockCode = responseJson.code || '';
     } catch (_) {}
     const chainLatencyMs = extractChainLatency(responseJson);
-    const isAuthEndpoint = wave.path === '/api/auth/email/register' || wave.path === '/api/auth/email/login';
-    // For hostile auth waves, app-layer 400/401 rejects still indicate prevention.
-    const appLayerPrevented = wave.expectBlock && isAuthEndpoint && (resp.status === 400 || resp.status === 401);
-    const blocked = resp.status === 403 || resp.status === 429 || appLayerPrevented;
-    return {
-      wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: resp.status, blocked, blockCode,
+    const graded = gradeObservedResponse({
+      status: resp.status,
+      body: responseJson,
       expectBlock: wave.expectBlock,
-      FAILURE: !blocked && wave.expectBlock,
-      FALSE_POS: blocked && !wave.expectBlock,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      runId,
+    });
+    return {
+      ...graded,
+      blockCode: graded.blockCode || blockCode,
+      bot: botIndex,
       startedAt: new Date(started).toISOString(),
       durationMs,
       chainLatencyMs,
-      path: wave.path,
       bodySample: body.slice(0, 80),
       error: '',
+      swarmProfileUsedForTimingOnly: Boolean(swarmProfile),
     };
   } catch (err) {
-    return {
-      wave: wave.id, waveName: wave.name, bot: botIndex,
-      status: 0, blocked: false, blockCode: '',
+    const graded = gradeObservedResponse({
+      status: 0,
+      body: null,
       expectBlock: wave.expectBlock,
-      FAILURE: wave.expectBlock,
-      FALSE_POS: false,
+      path: wave.path,
+      protectedPaths,
+      waveId: wave.id,
+      waveName: wave.name,
+      runId,
+      transportError: true,
+    });
+    return {
+      ...graded,
+      bot: botIndex,
       startedAt: new Date().toISOString(),
       durationMs: null,
       chainLatencyMs: null,
-      path: wave.path,
       bodySample: body.slice(0, 80),
       error: String(err),
     };
@@ -320,7 +321,7 @@ export default {
 
     const BASE_URL = resolveTargetBaseUrl(payload, env);
     assertAllowedTarget(BASE_URL, env);
-    const BYPASS_HEADER = env.WAF_BYPASS_TOKEN || '';
+    const protectedPaths = resolveProtectedPaths(payload, env);
     const trafficMode = payload.trafficMode || 'all';
     const swarmProfile = payload.swarmProfile || null;
     const legitAuth = payload.legitAuth || null;
@@ -342,7 +343,7 @@ export default {
 
       const promises = [];
       for (let i = start; i <= end; i++) {
-        promises.push(runBot(BASE_URL, wave, i, BYPASS_HEADER, swarmProfile, legitAuth));
+        promises.push(runBot(BASE_URL, wave, i, swarmProfile, legitAuth, protectedPaths));
       }
       const waveResults = await Promise.allSettled(promises);
       for (const r of waveResults) {
@@ -365,17 +366,24 @@ export default {
       if (r.FALSE_POS) byWave[r.wave].falsePosCount++;
     }
 
+    const gate = aggregateGateReport(allResults);
     const report = {
       worker: 'headless-bot-worker',
+      harness: 'fetch-ua-string',
+      proves: 'How the gate scores request headers and bodies sent by Worker fetch().',
+      doesNotProve: 'Behavior of a real headless browser, Playwright, Puppeteer, or Selenium.',
+      protectedPaths,
       summary: {
         totalBots,
         totalBlocked,
         blockRate: totalBots ? `${((totalBlocked / totalBots) * 100).toFixed(1)}%` : '0%',
         failures: failures.length,
         falsePositives: falsePos.length,
-        PASS: failures.length === 0 && falsePos.length === 0,
+        confusion: gate.counts,
+        PASS: gate.gradedRequests > 0 && gate.counts.FN === 0 && gate.counts.FP === 0 && gate.counts.error === 0,
       },
       byWave,
+      gate,
       rawResults: allResults,
       failureDetails: failures.slice(0, 20),
       falsePosDetails: falsePos.slice(0, 20),
