@@ -1,7 +1,7 @@
 {
   "name": "fcgbds",
-  "version": "2.1.0",
-  "description": "Config-driven bot defense middleware you can run on your own server.",
+  "version": "2.2.0",
+  "description": "Bot defense for any API or platform. Self-hosted scoring, challenges, and route policies for signup, login, posting, reports, and custom routes.",
   "engines": {
     "node": ">=18.0.0"
   },

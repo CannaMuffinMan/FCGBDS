@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0
+
+Positioned as bot defense for any API. One service can hold several apps, each with an API key, optional profiles, and separate stats.
+
+- Route policies accept `actionRules`: `block`, `challenge`, `flag`, `shadow`, `log`. Flag and log do not change HTTP status. Shadow marks the request; `shadow: rate_limit` returns an explicit 429 only when velocity also fired.
+- Caller-supplied `extraSignals` (capped at 50 each) and in-process `SignalHook`s.
+- Allow-list match type `header` (`header-name:substring`) for machine clients.
+- Webhook event type is `bot-defense.decision` and includes `appId`.
+- Optional public counters stay at `GET /v1/wall` and are documented as a demo widget.
+
 ## 2.1.0
 
 Self-hosted integration release. The evaluator from 2.0.0 stays the default. Nothing in this version calls a Forever Couch Gang service.

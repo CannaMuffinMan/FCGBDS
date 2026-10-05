@@ -1,10 +1,11 @@
 openapi: 3.0.3
 info:
   title: FCGBDS
-  version: 2.1.0
+  version: 2.2.0
   description: |
-    HTTP API for a self-hosted FCGBDS instance. Clients send requests to the
-    operator's own base URL. This spec does not reference any other service.
+    Bot defense for any API. Send your route, client IP, and headers to your
+    own instance. Optional app keys keep policies and stats apart. This spec
+    does not reference any other service.
 servers:
   - url: http://127.0.0.1:3001
 paths:
@@ -48,6 +49,14 @@ paths:
                   type: object
                   additionalProperties: { type: string }
                 body: {}
+                appId: { type: string }
+                extraSignals:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      score: { type: number }
                 trafficLane:
                   type: string
                   enum: [live, practice]
@@ -138,6 +147,17 @@ paths:
       responses:
         "200":
           description: text/event-stream
+  /v1/apps:
+    get:
+      summary: List apps without their keys
+      responses:
+        "200":
+          description: App ids
+    post:
+      summary: Create an app and return its key once
+      responses:
+        "201":
+          description: apiKey is shown once
   /v1/wall:
     get:
       summary: Public aggregate counts

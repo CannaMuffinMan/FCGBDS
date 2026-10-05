@@ -71,7 +71,7 @@ export function createMiddleware(opts: {
       }
       res.status(decision.status);
       const accept = String(req.headers.accept || '');
-      if (decision.status === 429 && accept.includes('text/html')) {
+      if (decision.status === 429 && decision.body.error === 'challenge_required' && accept.includes('text/html')) {
         res.type('html').send(challengePage(token || ''));
         return;
       }

@@ -1,8 +1,10 @@
-# FCGBDS
+# Bot defense for any API or platform
 
-MIT-licensed bot defense you run on your own machine. Version 2.1.0 is a library and an HTTP service: score a request, optionally require a text visitor check, or block it. Other platforms talk to **your** instance. This repository does not embed Forever Couch Gang hosts, API keys, or accounts.
+FCGBDS is self-hosted bot defense for **your** API: signup, login, posting, user reports, payments-adjacent routes, and any custom path you name. One process can cover several apps, each with its own key, policies, and stats. You run it. It does not call out to another company’s service.
 
-It will not stop a determined attacker with a real browser. See [Limitations](#limitations) and `docs/THREAT-MODEL.md`.
+Version 2.2.0 scores a request and then does what **your policy** says: allow, log, flag for moderation, shadow or rate-limit, challenge, or block. Wire the events into your own reporting or self-healing. A public stats page is an optional add-on and is documented at the end.
+
+It will not stop a determined attacker with a real browser. See [Limitations](#limitations) and `docs/THREAT-MODEL.md`. The 10-minute API guide is `INTEGRATION-GUIDE.md`.
 
 ## Five-minute service quick start
 
@@ -30,7 +32,9 @@ Docker, with Redis:
 docker compose up --build
 ```
 
-Set `FCGBDS_DASHBOARD_PASSWORD` and open `http://127.0.0.1:3001/dashboard`. The page shows checks issued, passed, not verified, and stopped for this process. The mode toggle is stored in the configured store and kept across restart.
+Set `FCGBDS_DASHBOARD_PASSWORD` and open `http://127.0.0.1:3001/dashboard`. Counts are checks issued, passed, not verified, and stopped for this process, split by app id when you create apps. The mode toggle is stored in the configured store.
+
+Protect a specific API by creating an app (`POST /v1/apps` with the admin token) and sending that app key on `POST /v1/evaluate`. Policies and stats stay on that app. See `INTEGRATION-GUIDE.md`.
 
 ## What a request is scored on
 
@@ -66,9 +70,7 @@ In enforce mode a challenge is HTTP 429 and a JSON body with `error: challenge_r
 - `GET /v1/events` — server-sent events for the admin token or dashboard session
 - `GET /v1/forward-auth` — for Caddy and NGINX. Send `X-Original-URI` and `X-Original-Method`. NGINX should also send `X-FCGBDS-Nginx: 1` so a visitor check is status 401 (auth_request drops other codes) with a JSON body
 - `GET /health`, `GET /ready`, `GET /metrics` (Prometheus text)
-- `GET /v1/wall` and `/wall.js` only if `FCGBDS_WALL_PUBLIC=true`
-
-Decision webhooks: set `FCGBDS_EVENT_WEBHOOK_URL` to an endpoint you run. The JSON is `{ type, event }` and the event carries an IP hash prefix, not the full address.
+Decision webhooks: set `FCGBDS_EVENT_WEBHOOK_URL`, or a per-app `webhookUrl`, to an endpoint you run. The JSON is `{ "type": "bot-defense.decision", "event" }`. The event has the app id, intended action (`log`, `flag`, `shadow`, `challenge`, `block`), path, score, and an IP hash prefix. It does not include the full IP or the request body. Point that at your moderation queue or a job that tightens a policy.
 
 ## Quick start per platform
 
@@ -215,7 +217,15 @@ npm run harness
 - Memory counters are per process. SQLite is one file and one writer. Use Redis or Postgres for more than one replica, and expect fixed windows there rather than the in-memory sliding window.
 - Allowlists that match only a User-Agent can be spoofed.
 - Webhook allowlisting checks that a header name is present. It does not verify the signature.
-- Dashboard and wall numbers are counts since process start (mode and lists are what the store saved). They are not a lifetime block total.
+- Dashboard numbers are counts since process start (mode, lists, and app records are what the store saved). They are not a lifetime block total.
+- Custom signal hooks run in-process. Over HTTP, send `extraSignals` you already computed; each score is capped at 50. The service does not load your code.
+- `shadow` with `rate_limit` returns 429 only when the velocity signal also fired. Otherwise the request continues with `X-FCGBDS-Shadow: 1` and your API decides what to hide or slow down.
+- `flag` and `log` never change the HTTP status. They emit an event.
+- App keys and per-app policies exist after `POST /v1/apps`. Until then there is one implicit `default` app. Keys are shown once.
+
+## Optional public stats
+
+If you want a public counter, set `FCGBDS_WALL_PUBLIC=true`. `GET /v1/wall` returns checks issued, passed, not verified, and stopped. `/wall.js` fills an element with `[data-fcgbds-wall]`. This is a demo widget, not part of protecting an API. Leave it off unless you mean to publish those counts.
 - No claim of complete coverage or a measured false-positive rate on your traffic.
 
 ## License

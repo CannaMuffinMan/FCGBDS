@@ -28,12 +28,28 @@ function parseFailure(value: string | undefined, fallback: FailurePolicy): Failu
 function defaultProfiles(): RouteProfile[] {
   return [
     {
-      id: 'auth',
-      pathPrefixes: ['/login', '/register', '/api/auth'],
+      id: 'signup',
+      pathPrefixes: ['/signup', '/register'],
+      failurePolicy: 'fail-closed',
+      velocity: { maxHits: 8, windowMs: 60_000 },
+      challengeThreshold: 50,
+      blockThreshold: 80,
+    },
+    {
+      id: 'login',
+      pathPrefixes: ['/login', '/api/auth', '/session'],
       failurePolicy: 'fail-closed',
       velocity: { maxHits: 12, windowMs: 60_000 },
       challengeThreshold: 50,
       blockThreshold: 80,
+    },
+    {
+      id: 'reports',
+      pathPrefixes: ['/reports', '/abuse', '/api/reports'],
+      failurePolicy: 'fail-closed',
+      velocity: { maxHits: 10, windowMs: 60_000 },
+      challengeThreshold: 45,
+      blockThreshold: 75,
     },
     {
       id: 'webhooks',

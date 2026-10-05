@@ -1,4 +1,4 @@
-# Public wall
+# Publishing checklist
 
 This repository is public. Before every commit:
 

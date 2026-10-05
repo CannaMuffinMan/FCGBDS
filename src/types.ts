@@ -1,10 +1,10 @@
 export type RuntimeMode = 'observe' | 'enforce';
 export type FailurePolicy = 'fail-open' | 'fail-closed';
 export type TrafficLane = 'live' | 'practice';
-export type DecisionAction = 'allow' | 'challenge' | 'block';
+export type DecisionAction = 'allow' | 'challenge' | 'block' | 'flag' | 'shadow' | 'log';
 export type StoreBackend = 'memory' | 'redis' | 'postgres' | 'sqlite';
 export type ListKind = 'allow' | 'deny';
-export type ListMatchType = 'ip' | 'cidr' | 'ua' | 'path';
+export type ListMatchType = 'ip' | 'cidr' | 'ua' | 'path' | 'header';
 
 export interface SignalResult {
   id: string;
@@ -13,15 +13,32 @@ export interface SignalResult {
   detail?: string;
 }
 
+export interface ActionRule {
+  /** Apply when the score is at least this value. The highest matching minScore wins. */
+  minScore: number;
+  action: Exclude<DecisionAction, 'allow'>;
+}
+
 export interface RouteProfile {
   id: string;
-  /** Path prefixes this profile applies to. First match wins. */
+  /** Path prefixes this profile applies to. First match wins. Names are yours. */
   pathPrefixes: string[];
   methods?: string[];
   mode?: RuntimeMode;
   failurePolicy: FailurePolicy;
   challengeThreshold?: number;
   blockThreshold?: number;
+  /**
+   * Replaces the challenge/block thresholds when set.
+   * Actions: block, challenge, flag (allow + event), log (allow + event),
+   * shadow (allow + header; optional rate limit).
+   */
+  actionRules?: ActionRule[];
+  /**
+   * mark: continue the request and set a shadow header.
+   * rate_limit: when the velocity signal fired, respond 429 with an explicit rate_limited body.
+   */
+  shadow?: 'mark' | 'rate_limit';
   velocity?: {
     maxHits: number;
     windowMs: number;
@@ -73,10 +90,18 @@ export interface EvaluationInput {
   ip: string;
   now?: number;
   trafficLane?: TrafficLane;
+  /** Scores computed by the caller. Each score is capped at 50 before it is added. */
+  extraSignals?: Array<{ id: string; score: number; detail?: string }>;
+  appId?: string;
 }
 
 export interface EvaluationResult {
   action: DecisionAction;
+  /** Policy action before observe mode forces allow. */
+  intendedAction: DecisionAction;
+  /** True when shadow is configured as rate_limit and velocity fired. */
+  rateLimited: boolean;
+  appId: string;
   wouldHaveBlocked: boolean;
   wouldHaveChallenged: boolean;
   score: number;
@@ -124,9 +149,24 @@ export interface IpReputationHook {
   lookup(ip: string): Promise<{ score: number; detail?: string } | null>;
 }
 
+export interface SignalHook {
+  id: string;
+  run(input: EvaluationInput): Promise<SignalResult | null> | SignalResult | null;
+}
+
+export interface TenantApp {
+  id: string;
+  name: string;
+  keyHash: string;
+  mode?: RuntimeMode;
+  profiles?: RouteProfile[];
+  webhookUrl?: string;
+}
+
 export interface DefenseEvent {
   id: string;
   at: string;
+  appId: string;
   action: DecisionAction;
   enforced: boolean;
   score: number;

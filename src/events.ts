@@ -11,11 +11,13 @@ export class EventBus {
   constructor(private max = 200) {}
 
   publish(path: string, ip: string, result: EvaluationResult): DefenseEvent | null {
-    if (result.action === 'allow' && !result.wouldHaveBlocked && !result.wouldHaveChallenged) return null;
+    const notable = result.intendedAction !== 'allow' || result.wouldHaveBlocked || result.wouldHaveChallenged;
+    if (!notable) return null;
     const event: DefenseEvent = {
       id: String(++this.seq),
       at: new Date().toISOString(),
-      action: result.enforced ? result.action : result.wouldHaveBlocked ? 'block' : 'challenge',
+      appId: result.appId,
+      action: result.intendedAction,
       enforced: result.enforced,
       score: result.score,
       profileId: result.profileId,
@@ -47,7 +49,7 @@ export function postWebhook(url: string, event: DefenseEvent, timeoutMs = 1500):
   } catch {
     return;
   }
-  const body = JSON.stringify({ type: 'fcgbds.decision', event });
+  const body = JSON.stringify({ type: 'bot-defense.decision', event });
   const lib = parsed.protocol === 'https:' ? https : http;
   const req = lib.request(
     parsed,

@@ -5,7 +5,7 @@ export function isListKind(value: string): value is ListKind {
 }
 
 export function isMatchType(value: string): value is ListMatchType {
-  return value === 'ip' || value === 'cidr' || value === 'ua' || value === 'path';
+  return value === 'ip' || value === 'cidr' || value === 'ua' || value === 'path' || value === 'header';
 }
 
 export function ipInCidr(ip: string, cidr: string): boolean {
@@ -22,13 +22,22 @@ export function ipInCidr(ip: string, cidr: string): boolean {
 
 export function matchList(
   entries: ListEntry[],
-  subject: { ip: string; userAgent: string; path: string },
+  subject: { ip: string; userAgent: string; path: string; headers?: Record<string, string | string[] | undefined> },
 ): ListEntry | undefined {
   for (const entry of entries) {
     if (entry.matchType === 'ip' && entry.value === subject.ip) return entry;
     if (entry.matchType === 'cidr' && ipInCidr(subject.ip, entry.value)) return entry;
     if (entry.matchType === 'ua' && subject.userAgent.toLowerCase().includes(entry.value.toLowerCase())) return entry;
     if (entry.matchType === 'path' && (subject.path === entry.value || subject.path.startsWith(entry.value))) return entry;
+    if (entry.matchType === 'header' && subject.headers) {
+      const split = entry.value.indexOf(':');
+      if (split < 1) continue;
+      const name = entry.value.slice(0, split).toLowerCase();
+      const expect = entry.value.slice(split + 1);
+      const raw = subject.headers[name];
+      const got = Array.isArray(raw) ? raw.join(',') : String(raw || '');
+      if (expect && got.includes(expect)) return entry;
+    }
   }
   return undefined;
 }

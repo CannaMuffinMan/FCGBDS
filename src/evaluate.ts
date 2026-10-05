@@ -1,3 +1,4 @@
+import { resolveIntendedAction } from './actions';
 import { matchProfile } from './config';
 import { clearanceValid, readClearance } from './challenge';
 import { matchList } from './lists';
@@ -6,6 +7,10 @@ import type { DefenseConfig, DefenseStore, EvaluationInput, EvaluationResult, Ip
 
 export interface EvaluateOptions {
   reputation?: IpReputationHook;
+  hooks?: import('./types').SignalHook[];
+  mode?: import('./types').RuntimeMode;
+  profiles?: import('./types').RouteProfile[];
+  appId?: string;
 }
 
 function header(headers: EvaluationInput['headers'], name: string): string {
@@ -68,6 +73,9 @@ function baseResult(
     allowlistReason: undefined,
     denied: false,
     clearance: false,
+    intendedAction: 'allow',
+    rateLimited: false,
+    appId: 'default',
     ...shared,
     ...partial,
   };
@@ -79,8 +87,10 @@ export async function evaluateRequest(
   store: DefenseStore,
   options: EvaluateOptions = {},
 ): Promise<EvaluationResult> {
-  const profile = matchProfile(input.path, input.method, config.profiles);
-  const mode = profile.mode || config.mode;
+  const profiles = options.profiles || config.profiles;
+  const profile = matchProfile(input.path, input.method, profiles);
+  const mode = profile.mode || options.mode || config.mode;
+  const appId = options.appId || input.appId || 'default';
   const trafficLane = lane(input, config);
   const shared = {
     mode,
@@ -88,10 +98,11 @@ export async function evaluateRequest(
     failurePolicy: profile.failurePolicy,
     trafficLane,
     storeBackend: store.backend(),
+    appId,
   };
 
   const userAgent = header(input.headers, 'user-agent');
-  const denied = matchList(await store.list('deny'), { ip: input.ip, userAgent, path: input.path });
+  const denied = matchList(await store.list('deny'), { ip: input.ip, userAgent, path: input.path, headers: input.headers });
   if (denied) {
     const enforce = mode === 'enforce';
     return baseResult(
@@ -105,12 +116,13 @@ export async function evaluateRequest(
         allowlisted: false,
         denied: true,
         denyReason: denied.id,
+        intendedAction: 'block',
       },
       shared,
     );
   }
 
-  const dynamicAllow = matchList(await store.list('allow'), { ip: input.ip, userAgent, path: input.path });
+  const dynamicAllow = matchList(await store.list('allow'), { ip: input.ip, userAgent, path: input.path, headers: input.headers });
   const allow = dynamicAllow
     ? { ok: true, reason: `list:${dynamicAllow.id}` }
     : checkAllowlist(input, config);
@@ -148,20 +160,35 @@ export async function evaluateRequest(
   }
 
   const signals = await runSignals(input, config, profile, store, options);
+  if (options.hooks) {
+    for (const hook of options.hooks) {
+      const found = await hook.run(input);
+      if (found && found.score > 0) signals.push({ ...found, id: found.id || hook.id });
+    }
+  }
+  for (const extra of input.extraSignals || []) {
+    const score = Math.max(0, Math.min(50, Math.round(Number(extra.score) || 0)));
+    if (!extra.id || score <= 0) continue;
+    signals.push({ id: String(extra.id).slice(0, 64), score, triggered: true, detail: extra.detail });
+  }
   const score = Math.min(100, signals.reduce((sum, s) => sum + s.score, 0));
-  const challengeAt = profile.challengeThreshold ?? config.challengeThreshold;
-  const blockAt = profile.blockThreshold ?? config.blockThreshold;
-  const wouldHaveBlocked = score >= blockAt;
-  const wouldHaveChallenged = !wouldHaveBlocked && score >= challengeAt;
-  const intended: EvaluationResult['action'] = wouldHaveBlocked
-    ? 'block'
-    : wouldHaveChallenged
-      ? 'challenge'
-      : 'allow';
+  const intended = resolveIntendedAction(score, profile, config);
+  const velocity = signals.some((s) => s.id === 'velocity' && s.triggered);
+  const rateLimited = intended === 'shadow' && profile.shadow === 'rate_limit' && velocity;
+  const wouldHaveBlocked = intended === 'block';
+  const wouldHaveChallenged = intended === 'challenge';
   const enforce = mode === 'enforce';
+  let action: EvaluationResult['action'] = 'allow';
+  if (enforce) {
+    if (intended === 'flag' || intended === 'log' || (intended === 'shadow' && !rateLimited)) action = intended;
+    else if (intended === 'shadow' && rateLimited) action = 'shadow';
+    else action = intended;
+  }
   return baseResult(
     {
-      action: enforce ? intended : 'allow',
+      action,
+      intendedAction: intended,
+      rateLimited: enforce && rateLimited,
       wouldHaveBlocked,
       wouldHaveChallenged,
       score,

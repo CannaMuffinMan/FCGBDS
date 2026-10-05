@@ -24,8 +24,13 @@ export class Telemetry {
   private live = emptyLane();
   private practice = emptyLane();
   private checks: CheckCounters = { checksIssued: 0, passed: 0, failed: 0, stopped: 0 };
+  private byApp = new Map<string, { evaluated: number; flagged: number; stopped: number; challenged: number }>();
 
   record(result: EvaluationResult): void {
+    const app = this.byApp.get(result.appId) || { evaluated: 0, flagged: 0, stopped: 0, challenged: 0 };
+    app.evaluated += 1;
+    if (result.intendedAction === 'flag' || result.action === 'flag') app.flagged += 1;
+    this.byApp.set(result.appId, app);
     const lane = result.trafficLane === 'practice' ? this.practice : this.live;
     lane.evaluated += 1;
     if (result.allowlisted) lane.allowlisted += 1;
@@ -35,11 +40,17 @@ export class Telemetry {
     if (result.enforced && result.action === 'block') {
       lane.enforcedBlocked += 1;
       this.checks.stopped += 1;
+      app.stopped += 1;
     }
     if (result.enforced && result.action === 'challenge') {
       lane.enforcedChallenged += 1;
       this.checks.checksIssued += 1;
+      app.challenged += 1;
     }
+  }
+
+  apps(): Record<string, { evaluated: number; flagged: number; stopped: number; challenged: number }> {
+    return Object.fromEntries(this.byApp);
   }
 
   challengeIssued(): void {

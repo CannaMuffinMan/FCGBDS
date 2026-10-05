@@ -8,6 +8,7 @@ import { matchProfile } from './config';
 import { dashboardPage, wallScript } from './dashboardPage';
 import { applyDecisionHeaders, decisionFor } from './decision';
 import { evaluateRequest } from './evaluate';
+import { findTenant, newAppKey, readTenants, writeTenants, hashAppKey } from './tenants';
 import { EventBus, postWebhook } from './events';
 import { isListKind, isMatchType } from './lists';
 import { log } from './log';
@@ -137,6 +138,45 @@ export function createApp(opts: AppOptions): express.Express {
       stopped: checks.stopped,
       telemetry: opts.telemetry.snapshot(),
       recentAlerts: opts.alerts.recent().slice(-50),
+      apps: opts.telemetry.apps(),
+    });
+  });
+
+  app.get('/v1/apps', async (req, res) => {
+    if (!requireAdmin(req, res, opts)) return;
+    const apps = await readTenants(opts.store);
+    res.json({
+      apps: apps.map((app) => ({ id: app.id, name: app.name, mode: app.mode || opts.config.mode, webhook: Boolean(app.webhookUrl) })),
+    });
+  });
+
+  app.post('/v1/apps', async (req, res) => {
+    if (!requireAdmin(req, res, opts)) return;
+    const id = String(req.body?.id || '').trim();
+    const name = String(req.body?.name || id).trim();
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) {
+      res.status(400).json({ error: 'invalid_app', message: 'id must be 1–64 letters, numbers, _ or -.' });
+      return;
+    }
+    const apps = await readTenants(opts.store);
+    if (apps.some((app) => app.id === id)) {
+      res.status(409).json({ error: 'app_exists', message: 'An app with that id already exists. Keys are not shown again.' });
+      return;
+    }
+    const apiKey = newAppKey();
+    apps.push({
+      id,
+      name,
+      keyHash: hashAppKey(apiKey),
+      mode: req.body?.mode === 'enforce' || req.body?.mode === 'observe' ? req.body.mode : undefined,
+      profiles: Array.isArray(req.body?.profiles) ? req.body.profiles : undefined,
+      webhookUrl: req.body?.webhookUrl ? String(req.body.webhookUrl) : undefined,
+    });
+    await writeTenants(opts.store, apps);
+    res.status(201).json({
+      app: { id, name },
+      apiKey,
+      message: 'Store this key. It is not shown again. Send it as Authorization: Bearer on POST /v1/evaluate.',
     });
   });
 
@@ -193,7 +233,7 @@ export function createApp(opts: AppOptions): express.Express {
     const matchType = String(req.body?.matchType || '');
     const value = String(req.body?.value || '').trim();
     if (!isMatchType(matchType) || !value) {
-      res.status(400).json({ error: 'invalid_entry', message: 'matchType must be ip, cidr, ua, or path, and value is required.' });
+      res.status(400).json({ error: 'invalid_entry', message: 'matchType must be ip, cidr, ua, path, or header, and value is required. header values look like x-api-key:prefix.' });
       return;
     }
     const entry = {
@@ -218,11 +258,23 @@ export function createApp(opts: AppOptions): express.Express {
   });
 
   app.post('/v1/evaluate', async (req, res) => {
-    if (opts.apiToken && !tokensEqual(bearer(header(req, 'authorization')), opts.apiToken)) {
+    const presented = bearer(header(req, 'authorization'));
+    const tenants = await readTenants(opts.store);
+    const tenant = await findTenant(opts.store, presented);
+    const admin = Boolean(opts.apiToken) && tokensEqual(presented, opts.apiToken);
+    if (tenants.length > 0 && !tenant && !admin) {
+      res.status(401).json({
+        error: 'unauthorized',
+        message: 'Send the app key for the API you are protecting, or the admin token.',
+      });
+      return;
+    }
+    if (tenants.length === 0 && opts.apiToken && !admin) {
       res.status(401).json({ error: 'unauthorized', message: 'FCGBDS_API_TOKEN is set. Send it as a bearer token.' });
       return;
     }
     const body = req.body || {};
+    const named = tenant || (admin && body.appId ? tenants.find((app) => app.id === String(body.appId)) : undefined);
     const input: EvaluationInput = {
       method: String(body.method || 'GET'),
       path: String(body.path || '/'),
@@ -230,13 +282,21 @@ export function createApp(opts: AppOptions): express.Express {
       body: body.body,
       ip: String(body.ip || 'unknown'),
       trafficLane: body.trafficLane === 'practice' ? 'practice' : undefined,
+      extraSignals: Array.isArray(body.extraSignals) ? body.extraSignals : undefined,
+      appId: named?.id || 'default',
     };
     try {
-      const result = await evaluateRequest(input, opts.config, opts.store, { reputation: opts.reputation });
+      const result = await evaluateRequest(input, opts.config, opts.store, {
+        reputation: opts.reputation,
+        mode: named?.mode,
+        profiles: named?.profiles,
+        appId: named?.id || 'default',
+      });
       opts.telemetry.record(result);
       opts.alerts.fromResult(input.path, result);
       const event = opts.events.publish(input.path, input.ip, result);
-      if (event && opts.webhookUrl) postWebhook(opts.webhookUrl, event);
+      const hook = named?.webhookUrl || opts.webhookUrl;
+      if (event && hook) postWebhook(hook, event);
       const decision = decisionFor(result, result.action === 'challenge' ? issueChallengeToken(opts.config.challengeSecret) : undefined);
       res.json({ result, response: decision?.body ?? null });
     } catch (error) {
