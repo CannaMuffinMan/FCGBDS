@@ -5,6 +5,8 @@ dist/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+__pycache__/
+*.pyc
 logs/
 coverage/
 *.tsbuildinfo
