@@ -1,0 +1,196 @@
+openapi: 3.0.3
+info:
+  title: FCGBDS
+  version: 2.2.0
+  description: |
+    Bot defense for any API. Send your route, client IP, and headers to your
+    own instance. Optional app keys keep policies and stats apart. This spec
+    does not reference any other service.
+servers:
+  - url: http://127.0.0.1:3001
+paths:
+  /health:
+    get:
+      summary: Liveness
+      responses:
+        "200":
+          description: Process is up
+  /ready:
+    get:
+      summary: Readiness
+      responses:
+        "200":
+          description: Store matches configuration
+        "503":
+          description: Configured Redis is unavailable and the process fell back to memory
+  /metrics:
+    get:
+      summary: Prometheus text
+      responses:
+        "200":
+          description: Metrics
+  /v1/evaluate:
+    post:
+      summary: Score one request
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method, path, ip]
+              properties:
+                method: { type: string }
+                path: { type: string }
+                ip: { type: string }
+                headers:
+                  type: object
+                  additionalProperties: { type: string }
+                body: {}
+                appId: { type: string }
+                extraSignals:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      score: { type: number }
+                trafficLane:
+                  type: string
+                  enum: [live, practice]
+      responses:
+        "200":
+          description: Evaluation. `response` is null when the action is allow.
+        "401":
+          description: API token required
+        "503":
+          description: Evaluator failed on a fail-closed route
+  /v1/challenge/verify:
+    post:
+      summary: Submit a visitor check
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer, token, ip]
+              properties:
+                answer: { type: string }
+                token: { type: string }
+                ip: { type: string }
+      responses:
+        "200":
+          description: Clearance token bound to the IP
+        "400":
+          description: Answer or token rejected
+  /v1/stats:
+    get:
+      summary: Owner stats
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Checks issued, passed, not verified, stopped
+        "401":
+          description: Missing admin credential
+  /v1/mode:
+    post:
+      summary: Set observe or enforce
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Mode stored
+  /v1/policies:
+    get:
+      summary: Read route profiles
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Profiles
+    put:
+      summary: Replace route profiles
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Profiles replaced in this process and the store
+  /v1/lists/{kind}:
+    parameters:
+      - in: path
+        name: kind
+        required: true
+        schema: { type: string, enum: [allow, deny] }
+    get:
+      summary: List allow or deny entries
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Entries
+    post:
+      summary: Add an entry
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Created
+  /v1/events:
+    get:
+      summary: Server-sent decision events
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: text/event-stream
+  /v1/apps:
+    get:
+      summary: List apps without their keys
+      responses:
+        "200":
+          description: App ids
+    post:
+      summary: Create an app and return its key once
+      responses:
+        "201":
+          description: apiKey is shown once
+  /v1/wall:
+    get:
+      summary: Public aggregate counts
+      responses:
+        "200":
+          description: Counts when FCGBDS_WALL_PUBLIC=true
+        "404":
+          description: Wall disabled
+  /v1/forward-auth:
+    get:
+      summary: NGINX and Caddy forward auth
+      parameters:
+        - in: header
+          name: X-Original-URI
+          schema: { type: string }
+        - in: header
+          name: X-Original-Method
+          schema: { type: string }
+        - in: header
+          name: X-FCGBDS-Nginx
+          schema: { type: string }
+          description: Set to 1 so a visitor check is returned as 401 for auth_request
+      responses:
+        "200":
+          description: Allow
+        "401":
+          description: Visitor check when called from NGINX
+        "403":
+          description: Block
+        "429":
+          description: Visitor check with a JSON body
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

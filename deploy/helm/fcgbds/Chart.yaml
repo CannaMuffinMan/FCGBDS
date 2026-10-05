@@ -1,0 +1,6 @@
+apiVersion: v2
+name: fcgbds
+description: Self-hosted FCGBDS bot defense
+type: application
+version: 2.1.0
+appVersion: "2.1.0"

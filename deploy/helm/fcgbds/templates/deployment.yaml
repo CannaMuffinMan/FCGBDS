@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fcgbds
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: fcgbds
+  template:
+    metadata:
+      labels:
+        app: fcgbds
+    spec:
+      containers:
+        - name: fcgbds
+          image: {{ .Values.image }}
+          ports:
+            - containerPort: 3001
+          env:
+            - name: FCGBDS_MODE
+              value: {{ .Values.env.FCGBDS_MODE | quote }}
+            - name: FCGBDS_STORE
+              value: {{ .Values.env.FCGBDS_STORE | quote }}
+            - name: FCGBDS_WALL_PUBLIC
+              value: {{ .Values.env.FCGBDS_WALL_PUBLIC | quote }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3001
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fcgbds
+spec:
+  selector:
+    app: fcgbds
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 3001

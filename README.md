@@ -1,283 +1,233 @@
-# FCGBDS (Forever Couch Gang Bot Defense System)
+# Bot defense for any API or platform
 
-![FCGBDS Protected Poster](assets/social/fcgbds-protected-poster.jpg)
+FCGBDS is self-hosted bot defense for **your** API: signup, login, posting, user reports, payments-adjacent routes, and any custom path you name. One process can cover several apps, each with its own key, policies, and stats. You run it. It does not call out to another company’s service.
 
-![FCGBDS 8-Layer Poster](assets/social/fcgbds-8-layer-poster.jpg)
+Version 2.2.0 scores a request and then does what **your policy** says: allow, log, flag for moderation, shadow or rate-limit, challenge, or block. Wire the events into your own reporting or self-healing. A public stats page is an optional add-on and is documented at the end.
 
-FCGBDS is a production bot defense stack you can run in your own system.
-This repo now includes the full customer runtime modules, middleware logic, and Cloudflare Worker test clients with placeholder-safe defaults.
+It will not stop a determined attacker with a real browser. See [Limitations](#limitations) and `docs/THREAT-MODEL.md`. The 10-minute API guide is `INTEGRATION-GUIDE.md`.
 
-License: MIT.
-Price: Free.
-
-## Start here
-
-1. System deep dive: `explanative`
-2. MSCB bridge deep dive: `MSCB_EXPLANATIVE.md`
-2. Contribution guide: `CONTRIBUTING.md`
-3. Promotion snippets: `PROMOTION_KIT.md`
-4. Benchmark docs: `scripts/benchmark/README.md`
-5. Read-only demo: `demo/read-only-dashboard.html`
-6. Social/media assets: `assets/social/`
-
-## Voluntary request from the author
-
-If FCGBDS helps your platform, we ask for one of the following:
-
-1. Donate to @CannaMuffinman.
-2. At minimum, publicly state that your platform is protected by FCGBDS.
-
-This is a request, not a legal requirement. The legal terms are MIT.
-
-## What is included
-
-1. Full TypeScript runtime modules in `src/`:
-	- `botDefense.ts`
-	- `index.ts`
-	- `telemetryManager.ts`
-	- `updateManager.ts`
-	- `dashboard.ts`
-	- `licenseManager.ts` (open source compatibility shim, no paid license)
-2. Redis state manager reference in `botDefenseRedis.ts`.
-3. Cloudflare Worker examples in `cloudflare-workers/`.
-4. Docker, deploy scripts, and `.env.example` for quick rollout.
-
-## High-level architecture
-
-FCGBDS uses layered scoring and thresholds to decide whether to allow, challenge, or block incoming traffic.
-
-Primary signal families:
-
-1. IP hit windows.
-2. Device fingerprint hit windows.
-3. Payload repetition windows.
-4. Header and browser consistency checks.
-5. Host mismatch checks.
-6. Honeypot field detection.
-
-State can run in-memory or Redis-backed for horizontal scaling.
-
-```mermaid
-flowchart LR
-	U[Client Request] --> E[Edge/API Entry]
-	E --> M[FCGBDS Middleware]
-	M --> S1[IP Window Signal]
-	M --> S2[Device Fingerprint Signal]
-	M --> S3[Payload Repetition Signal]
-	M --> S4[Header and Browser Trust Signal]
-	M --> S5[Host Mismatch Signal]
-	M --> S6[Honeypot Signal]
-	S1 --> R[Risk Score Aggregation]
-	S2 --> R
-	S3 --> R
-	S4 --> R
-	S5 --> R
-	S6 --> R
-	R --> D{Decision Thresholds}
-	D -->|Allow| A[Route Handler]
-	D -->|Challenge| C[429 Challenge Response]
-	D -->|Block| B[403 Block Response]
-	M <-->|Shared Counters| X[(Redis)]
-	M -.fallback.-> L[(Local Memory)]
-	M --> T[Telemetry and Dashboard]
-```
-
-## Quick start
-
-### 1) Install dependencies
+## Five-minute service quick start
 
 ```bash
-npm install
-```
-
-### 2) Configure environment
-
-```bash
+git clone https://github.com/CannaMuffinMan/FCGBDS.git
+cd FCGBDS
 cp .env.example .env
-```
-
-Set placeholder values in `.env`:
-
-- `FCG_API_BASE_URL=https://PLACEHOLDER_API_BASE_URL`
-- `BOT_DEFENSE_EXPECTED_HOSTNAME=api.yourdomain.com`
-- `REDIS_URL=redis://localhost:6379` (optional but recommended)
-
-### 3) Run in development
-
-```bash
+npm install
+npm test
 npm run dev
 ```
 
-### 4) Build and run production
+```bash
+curl -s http://127.0.0.1:3001/health
+curl -s -D - http://127.0.0.1:3001/login -o /tmp/fcgbds-body.txt
+curl -s -D - -A 'curl/8.0' -H 'Content-Type: application/json' \
+  -d '{"website":"http://example"}' http://127.0.0.1:3001/login
+```
+
+The default mode is `observe`. Both requests are allowed. The second should include `X-FCGBDS-Would-Block: 1`. Set `FCGBDS_MODE=enforce` to return **403** or **429** with a JSON or HTML body that says why. FCGBDS does not answer with an empty 429.
+
+Docker, with Redis:
 
 ```bash
-npm run build
-npm start
+docker compose up --build
 ```
 
-### 5) Docker option
+Set `FCGBDS_DASHBOARD_PASSWORD` and open `http://127.0.0.1:3001/dashboard`. Counts are checks issued, passed, not verified, and stopped for this process, split by app id when you create apps. The mode toggle is stored in the configured store.
+
+Protect a specific API by creating an app (`POST /v1/apps` with the admin token) and sending that app key on `POST /v1/evaluate`. Policies and stats stay on that app. See `INTEGRATION-GUIDE.md`.
+
+## What a request is scored on
+
+| Signal | When it adds score |
+| --- | --- |
+| IP / ASN | Private address seen behind a forwarding header, or an ASN you listed in `FCGBDS_DATACENTER_ASNS` |
+| Device | Client-Hints brand disagrees with a Chrome User-Agent |
+| Header consistency | Host does not match `FCGBDS_EXPECTED_HOSTNAME`, or a browser-like UA is missing Accept or Sec-Fetch |
+| TLS class | Your edge sends `X-FCGBDS-TLS-Class: browser` or `automated` and it disagrees with the User-Agent. Unset means no score |
+| Velocity | IP, route, or device hash crosses the profile window |
+| Payload | Very large or high-cardinality JSON, or the same body repeated |
+| Token shape | Bearer value that is not three JWT segments, or whitespace in a token header |
+| Automation | User-Agent substrings such as `curl/`, `python-requests`, `HeadlessChrome` |
+| Replay | Reused `Idempotency-Key` or `X-Nonce` |
+| Honeypot | Non-empty configured form field |
+| IP reputation | Only if you set `FCGBDS_REPUTATION_URL` or pass a hook. Score is capped by `FCGBDS_REPUTATION_CAP` (default 50) |
+| Deny list | Matching IP, CIDR, User-Agent substring, or path is treated as a block |
+
+Thresholds default to 60 (visitor check) and 90 (block). Auth-like prefixes use 50 and 80.
+
+## Visitor check
+
+In enforce mode a challenge is HTTP 429 and a JSON body with `error: challenge_required`, or an HTML form when `Accept` contains `text/html`. The form asks the visitor to type CONTINUE. `POST /v1/challenge/verify` with the right answer returns a clearance token bound to the IP hash for 30 minutes. Send it as `X-FCGBDS-Clearance` or cookie `fcgbds_clearance`.
+
+## REST API
+
+`openapi/openapi.yaml` is the contract. Base URL is wherever you run the process.
+
+- `POST /v1/evaluate` — body `{ method, path, ip, headers, body }`. When `FCGBDS_API_TOKEN` is set, send `Authorization: Bearer`.
+- `POST /v1/challenge/verify`
+- `GET /v1/stats`, `POST /v1/mode`, `GET`/`PUT /v1/policies`
+- `GET`/`POST /v1/lists/allow` and `/v1/lists/deny`
+- `GET /v1/events` — server-sent events for the admin token or dashboard session
+- `GET /v1/forward-auth` — for Caddy and NGINX. Send `X-Original-URI` and `X-Original-Method`. NGINX should also send `X-FCGBDS-Nginx: 1` so a visitor check is status 401 (auth_request drops other codes) with a JSON body
+- `GET /health`, `GET /ready`, `GET /metrics` (Prometheus text)
+Decision webhooks: set `FCGBDS_EVENT_WEBHOOK_URL`, or a per-app `webhookUrl`, to an endpoint you run. The JSON is `{ "type": "bot-defense.decision", "event" }`. The event has the app id, intended action (`log`, `flag`, `shadow`, `challenge`, `block`), path, score, and an IP hash prefix. It does not include the full IP or the request body. Point that at your moderation queue or a job that tightens a policy.
+
+## Quick start per platform
+
+### Express (in process)
+
+```ts
+import express from 'express';
+import { AlertSink, createMiddleware, createStore, loadConfigFromEnv, Telemetry } from 'fcgbds';
+
+const config = loadConfigFromEnv();
+const store = await createStore({ redisUrl: config.redisUrl, prefix: config.redisKeyPrefix, maxKeys: config.storeMaxKeys });
+const app = express();
+app.use(express.json());
+app.use(createMiddleware({ config, store, telemetry: new Telemetry(), alerts: new AlertSink() }));
+```
+
+### TypeScript client (your instance)
+
+```ts
+import { FcgbdsClient } from 'fcgbds';
+const client = new FcgbdsClient(process.env.FCGBDS_URL || 'http://127.0.0.1:3001', process.env.FCGBDS_API_TOKEN);
+const decision = await client.evaluate({ method: 'POST', path: '/login', ip: '203.0.113.8', headers: { 'user-agent': 'example' } });
+```
+
+### Fastify
+
+```ts
+import { createStore, fcgbdsFastifyPlugin, loadConfigFromEnv } from 'fcgbds';
+const config = loadConfigFromEnv();
+const store = await createStore({ prefix: config.redisKeyPrefix, maxKeys: config.storeMaxKeys });
+fastify.register(fcgbdsFastifyPlugin({ config, store }));
+```
+
+### Next.js middleware
+
+```ts
+import { guardNextRequest } from 'fcgbds';
+export async function middleware(request: Request) {
+  const denied = await guardNextRequest(request, {
+    baseUrl: process.env.FCGBDS_URL || 'http://127.0.0.1:3001',
+    apiToken: process.env.FCGBDS_API_TOKEN,
+  });
+  return denied ?? NextResponse.next();
+}
+```
+
+### Node `http`
+
+```ts
+import http from 'http';
+import { createNodeHttpMiddleware, createStore, loadConfigFromEnv } from 'fcgbds';
+const config = loadConfigFromEnv();
+const store = await createStore({ prefix: config.redisKeyPrefix, maxKeys: config.storeMaxKeys });
+const guard = createNodeHttpMiddleware({ config, store });
+http.createServer((req, res) => { void guard(req, res, () => { res.end('ok'); }); }).listen(8080);
+```
+
+### Go
 
 ```bash
-docker-compose up -d
+cd sdk/go && go test ./...
 ```
 
-## How to integrate FCGBDS into your existing API
+```go
+import fcgbds "github.com/CannaMuffinMan/FCGBDS/sdk/go"
 
-### Option A: Run FCGBDS as your main edge API middleware
+client := &fcgbds.Client{BaseURL: os.Getenv("FCGBDS_URL"), Token: os.Getenv("FCGBDS_API_TOKEN")}
+http.ListenAndServe(":8080", fcgbds.Middleware(client, yourHandler))
+```
 
-1. Use `src/index.ts` as your entrypoint.
-2. Set `BOT_DEFENSE_PATHS` to routes you want protected.
-3. Route protected traffic through FCGBDS middleware before business logic.
+Module path: `github.com/CannaMuffinMan/FCGBDS/sdk/go`.
 
-### Option B: Embed middleware in an existing Express API
-
-1. Import `createBotDefenseMiddleware` from `src/botDefense.ts`.
-2. Initialize with your thresholds.
-3. `app.use(botDefense.middleware)` before sensitive routes.
-
-### Option C: Shared defense state across multiple API pods
-
-1. Use Redis (`REDIS_URL`) so counters are shared.
-2. Keep your pods stateless.
-3. Tune windows and thresholds per route profile.
-
-## Cloudflare Workers for testing and simulation
-
-The `cloudflare-workers/` directory includes worker copies you can deploy quickly.
-All environment-specific hostnames are replaced with placeholders.
-
-Typical setup per worker:
-
-1. Enter worker folder.
-2. Update `wrangler.toml` placeholders.
-3. Deploy with Wrangler.
-
-Example placeholders:
-
-- `TARGET_API = "https://PLACEHOLDER_API_BASE_URL"`
-- `ALLOWED_TARGET_HOSTS = "PLACEHOLDER_API_HOST,PLACEHOLDER_SECONDARY_API_HOST"`
-
-## Platform integration examples
-
-1. Express example: `examples/express-integration.md`
-2. Fastify example: `examples/fastify-integration.md`
-3. Twitch webhook integration notes: `examples/platforms/twitch-webhook-integration.md`
-4. Kick integration notes: `examples/platforms/kick-webhook-integration.md`
-5. MSCB backend plug-in quickstart: `examples/mscb-backend-plug-in.md`
-
-## MSCB plug-in support (included)
-
-FCGBDS now includes plug-and-play MSCB bridge runtime support so teams can wire it into backend quickly and verify activity immediately.
-
-MSCB endpoints:
-
-1. `GET /api/mscb/status`
-2. `GET /api/mscb/events`
-3. `GET /api/mscb/events/stream`
-4. `POST /api/mscb/activate`
-5. `POST /api/mscb/deactivate`
-6. `POST /api/mscb/simulate`
-
-Instant verification flow:
+### Python (ASGI, WSGI, FastAPI, Flask)
 
 ```bash
-curl http://localhost:3001/api/mscb/status
-curl -X POST http://localhost:3001/api/mscb/simulate -H "Content-Type: application/json" -d '{"platform":"twitch","channelId":"demo","userId":"u1","message":"hello"}'
-curl -N http://localhost:3001/api/mscb/events/stream
+PYTHONPATH=sdk/python python3 sdk/python/tests/test_middleware.py
 ```
 
-If events appear in status and stream output, your MSCB bridge code is active and running.
+```python
+from fcgbds.asgi import asgi_middleware
+from fcgbds.client import FcgbdsClient
+from fcgbds.wsgi import wsgi_middleware
 
-## Benchmarking and performance reporting
+client = FcgbdsClient("http://127.0.0.1:3001", api_token="")
+# FastAPI / Starlette: app = asgi_middleware(client)(app)
+# Flask: app.wsgi_app = wsgi_middleware(client, app.wsgi_app)
+```
 
-Use the built-in benchmark scripts to produce numbers you can publish with reproducible test conditions.
+### Cloudflare Workers
 
-1. Quick run:
+`adapters/cloudflare/worker.js` reads `FCGBDS_URL` and optional `FCGBDS_API_TOKEN` from the Worker environment and returns the instance’s JSON decision. It does not use a shared KV namespace from this project.
+
+### NGINX and Caddy
+
+- `deploy/nginx/fcgbds.conf`
+- `deploy/caddy/Caddyfile`
+
+Both call `/v1/forward-auth` on your instance. Replace the token and upstream addresses.
+
+### Postgres, SQLite, Redis
 
 ```bash
-npm run benchmark:quick
+# sqlite
+FCGBDS_STORE=sqlite FCGBDS_SQLITE_PATH=./fcgbds.sqlite npm run dev
+
+# postgres — apply migrations/postgres/001_init.sql (the process also runs it on connect)
+FCGBDS_STORE=postgres FCGBDS_POSTGRES_URL=postgres://user:pass@127.0.0.1:5432/fcgbds npm run dev
 ```
 
-2. Custom run:
+Redis remains `REDIS_URL` or `FCGBDS_STORE=redis`. If Redis errors, counters fall back to memory and `/ready` returns 503 while `/health` stays 200.
+
+### Helm, Fly, Railway
+
+- Chart: `deploy/helm/fcgbds`
+- `fly.toml` — set `app` to your Fly app name and provide secrets with `fly secrets set`
+- `railway.toml` — Dockerfile deploy; set variables in the Railway service
+
+## Configuration
+
+Copy `.env.example`. Empty `FCGBDS_CHALLENGE_SECRET` uses a development default that anyone who reads this code can forge. Set a long random value anywhere the process is shared.
+
+## Tests
 
 ```bash
-npm run benchmark -- --url http://127.0.0.1:3001/api/auth/login --connections 50 --duration 30 --method POST
+npm test
+npm run test:adapters
+npm run harness
 ```
 
-3. Full benchmark guide:
+`npm run harness` prints catch rate and false-positive rate for the bundled fixtures only.
 
-- `scripts/benchmark/README.md`
+## Docs
 
-No static RPS or latency claims are hardcoded in this repo. Publish your own measured results with command + environment details.
+- `docs/OPERATIONAL-RUNBOOK.md`
+- `docs/THREAT-MODEL.md`
+- `SECURITY.md`
+- `CHANGELOG.md`
 
-## Before/after showcase workflow
+## Limitations
 
-For stream credibility and auditability, publish anonymized before/after metrics snapshots:
+- A client that looks like a normal browser, stays under your limits, and passes the text check is allowed.
+- TLS and ASN signals do nothing until your edge sets the headers.
+- The reputation hook is your endpoint. There is no bundled IP database.
+- Memory counters are per process. SQLite is one file and one writer. Use Redis or Postgres for more than one replica, and expect fixed windows there rather than the in-memory sliding window.
+- Allowlists that match only a User-Agent can be spoofed.
+- Webhook allowlisting checks that a header name is present. It does not verify the signature.
+- Dashboard numbers are counts since process start (mode, lists, and app records are what the store saved). They are not a lifetime block total.
+- Custom signal hooks run in-process. Over HTTP, send `extraSignals` you already computed; each score is capped at 50. The service does not load your code.
+- `shadow` with `rate_limit` returns 429 only when the velocity signal also fired. Otherwise the request continues with `X-FCGBDS-Shadow: 1` and your API decides what to hide or slow down.
+- `flag` and `log` never change the HTTP status. They emit an event.
+- App keys and per-app policies exist after `POST /v1/apps`. Until then there is one implicit `default` app. Keys are shown once.
 
-1. Update `demo/sample-metrics.json` with your numbers.
-2. Open `demo/read-only-dashboard.html` to visualize the comparison.
-3. Share screenshot + benchmark command in your release notes.
+## Optional public stats
 
-## Placeholder safety
+If you want a public counter, set `FCGBDS_WALL_PUBLIC=true`. `GET /v1/wall` returns checks issued, passed, not verified, and stopped. `/wall.js` fills an element with `[data-fcgbds-wall]`. This is a demo widget, not part of protecting an API. Leave it off unless you mean to publish those counts.
+- No claim of complete coverage or a measured false-positive rate on your traffic.
 
-This repo intentionally replaces internal infrastructure values with placeholders:
+## License
 
-1. `PLACEHOLDER_API_BASE_URL`
-2. `PLACEHOLDER_API_HOST`
-3. `PLACEHOLDER_APP_HOST`
-4. `PLACEHOLDER_WEB_HOST`
-5. `PLACEHOLDER_SECONDARY_API_HOST`
-6. `PLACEHOLDER_TERTIARY_API_HOST`
-
-Replace these with your own values before deployment.
-
-## Visibility checklist
-
-1. Add GitHub topics to this repo:
-	- bot-detection
-	- rate-limiting
-	- anti-cheat
-	- cloudflare
-	- redis
-	- typescript
-2. Use `PROMOTION_KIT.md` for stream overlays and social posts.
-3. Add a read-only metrics screenshot from `demo/read-only-dashboard.html` to your repo homepage or posts.
-
-## Security and operations notes
-
-1. Do not log raw user secrets.
-2. Keep request body logging minimal and redacted.
-3. Use HTTPS only.
-4. Rotate tokens and shared secrets regularly.
-5. Start with conservative thresholds, then tune with live metrics.
-
-## Repository structure
-
-```text
-.
-├─ src/
-├─ cloudflare-workers/
-├─ examples/
-├─ scripts/benchmark/
-├─ demo/
-├─ botDefenseRedis.ts
-├─ .env.example
-├─ docker-compose.yml
-├─ Dockerfile
-├─ CONTRIBUTING.md
-├─ PROMOTION_KIT.md
-├─ deploy.sh
-├─ deploy.bat
-└─ explanative
-```
-
-## Contributing
-
-Contributions are welcome for:
-
-1. New detection signals.
-2. Better false-positive controls.
-3. Additional worker templates.
-4. Better observability and dashboards.
-
-Open an issue or PR with a clear reproduction and expected behavior.
+MIT. See `LICENSE`.

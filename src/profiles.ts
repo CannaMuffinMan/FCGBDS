@@ -1,0 +1,1 @@
+export { matchProfile } from './config';
